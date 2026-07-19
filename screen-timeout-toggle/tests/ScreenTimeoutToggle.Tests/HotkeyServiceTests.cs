@@ -33,8 +33,8 @@ public class HotkeyServiceTests
         var fired = false;
         svc.HotkeyPressed += () => fired = true;
 
-        // WM_HOTKEY = 0x0312
-        var msg = Message.Create(IntPtr.Zero, 0x0312, IntPtr.Zero, (IntPtr)1);
+        // WM_HOTKEY = 0x0312; WParam holds the hotkey id, LParam holds modifiers+vk
+        var msg = Message.Create(IntPtr.Zero, 0x0312, (IntPtr)1, IntPtr.Zero);
         var handled = svc.WndProc(msg);
 
         Assert.True(handled);
@@ -62,7 +62,7 @@ public class HotkeyServiceTests
         var fired = false;
         svc.HotkeyPressed += () => fired = true;
 
-        var msg = Message.Create(IntPtr.Zero, 0x0312, IntPtr.Zero, (IntPtr)99); // wrong id
+        var msg = Message.Create(IntPtr.Zero, 0x0312, (IntPtr)99, IntPtr.Zero); // WParam = wrong id
         var handled = svc.WndProc(msg);
 
         Assert.False(handled);

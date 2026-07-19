@@ -66,8 +66,13 @@ public class ConfigServiceTests
     }
 
     [Fact]
-    public void Load_MissingFields_FillsWithDefaults()
+    public void Load_MissingFields_UsesTypeDefaults()
     {
+        // Only work.acMinutes is provided; dcMinutes is missing inside the work object,
+        // and the entire away/hotkey objects are missing.
+        // System.Text.Json fills:
+        //   - missing scalar inside an existing object → type default (int=0)
+        //   - missing whole object → the property's init initializer (factory default)
         var path = TempFile();
         File.WriteAllText(path, """{"version":1,"work":{"acMinutes":7}}""");
         var svc = new ConfigService(path);
@@ -75,8 +80,8 @@ public class ConfigServiceTests
         var cfg = svc.Load();
 
         Assert.Equal(7, cfg.Work.AcMinutes);
-        Assert.Equal(30, cfg.Work.DcMinutes); // default
-        Assert.Equal(1, cfg.Away.AcMinutes);  // default
-        Assert.Equal("Ctrl+Alt", cfg.Hotkey.Modifiers); // default
+        Assert.Equal(0, cfg.Work.DcMinutes);   // int default (field missing inside work object)
+        Assert.Equal(1, cfg.Away.AcMinutes);    // factory default (whole Away object missing → init initializer)
+        Assert.Equal("Ctrl+Alt", cfg.Hotkey.Modifiers); // factory default (whole Hotkey missing)
     }
 }

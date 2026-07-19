@@ -47,9 +47,9 @@ public class ConfigService
         {
             // Backup corrupt file
             var dir = Path.GetDirectoryName(_filePath) ?? ".";
-            var name = Path.GetFileNameWithoutExtension(_filePath);
+            var fileName = Path.GetFileName(_filePath); // keep .json so glob "*.json.bak.*" matches
             var stamp = DateTime.Now.ToString("yyyyMMddHHmmss");
-            try { File.Move(_filePath, Path.Combine(dir, $"{name}.bak.{stamp}"), overwrite: true); }
+            try { File.Move(_filePath, Path.Combine(dir, $"{fileName}.bak.{stamp}"), overwrite: true); }
             catch { /* best effort */ }
 
             var def = AppConfig.CreateDefault();
