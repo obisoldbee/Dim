@@ -1,4 +1,4 @@
-namespace ScreenTimeoutToggle.Models;
+namespace OBDim.Models;
 
 public record HotkeyConfig
 {

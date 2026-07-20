@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
-using ScreenTimeoutToggle.Models;
+using OBDim.Models;
 
-namespace ScreenTimeoutToggle.Services;
+namespace OBDim.Services;
 
 public class HotkeyService
 {
@@ -38,6 +38,10 @@ public class HotkeyService
 
     public void SetHwnd(IntPtr hwnd) => _hwnd = hwnd;
 
+    /// <summary>
+    /// Registers a global hotkey. Internally unregisters any previously registered hotkey first.
+    /// Returns false if the key combination is invalid or already in use by another application.
+    /// </summary>
     public bool Register(HotkeyConfig cfg, int id = HOTKEY_ID)
     {
         Unregister(id);
@@ -45,6 +49,10 @@ public class HotkeyService
         var vk = KeyStringToVk(cfg.Key);
         if (vk == 0) return false;
         _registered = RegisterHotKey(_hwnd, id, mods, vk);
+        if (!_registered)
+        {
+            LogService.Warn($"Failed to register hotkey: {cfg.Modifiers}+{cfg.Key}");
+        }
         return _registered;
     }
 
@@ -65,6 +73,9 @@ public class HotkeyService
         return true;
     }
 
+    /// <summary>
+    /// Parses a modifier string like "Ctrl+Alt" into a combined Win32 modifier flag.
+    /// </summary>
     public static uint ParseModifiers(string s)
     {
         if (string.IsNullOrWhiteSpace(s)) return 0;
@@ -83,7 +94,11 @@ public class HotkeyService
         return mods;
     }
 
-    private static uint KeyStringToVk(string key)
+    /// <summary>
+    /// Converts a key string (e.g., "S", "F5", "1") to a Win32 virtual-key code.
+    /// Returns 0 for unrecognized keys.
+    /// </summary>
+    public static uint KeyStringToVk(string key)
     {
         if (string.IsNullOrWhiteSpace(key)) return 0;
         key = key.Trim().ToUpperInvariant();

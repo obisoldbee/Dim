@@ -1,8 +1,8 @@
 using Microsoft.Win32;
-using ScreenTimeoutToggle.Services;
+using OBDim.Services;
 using Xunit;
 
-namespace ScreenTimeoutToggle.Tests;
+namespace OBDim.Tests;
 
 public class AutoStartServiceTests
 {
@@ -47,6 +47,20 @@ public class AutoStartServiceTests
         var svc = new AutoStartService(executablePath: "C:\\Program Files\\app.exe",
                                        enableFn: () => { });
         Assert.NotNull(svc);
+    }
+
+    /// <summary>
+    /// F1: EnsurePathSync should be a no-op when autostart is not enabled.
+    /// </summary>
+    [Fact]
+    public void EnsurePathSync_NoOp_WhenNotEnabled()
+    {
+        var enableCalled = false;
+        var svc = new AutoStartService(
+            isEnabledFn: () => false,
+            enableFn: () => enableCalled = true);
+        svc.EnsurePathSync();
+        Assert.False(enableCalled);
     }
 
     /// <summary>

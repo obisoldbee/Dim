@@ -1,10 +1,11 @@
-using ScreenTimeoutToggle.Models;
+using OBDim.Models;
 
-namespace ScreenTimeoutToggle.Services;
+namespace OBDim.Services;
 
 public class ModeService
 {
-    private AppConfig _config;
+    // volatile ensures reference visibility across threads (UI + Task.Run)
+    private volatile AppConfig _config;
     private readonly PowerConfigService _power;
 
     public AppMode CurrentMode { get; private set; }
@@ -21,6 +22,9 @@ public class ModeService
 
     public void UpdateConfig(AppConfig newConfig) => _config = newConfig;
 
+    /// <summary>
+    /// Switches to the target mode by applying its AC/DC timeout values via powercfg.
+    /// </summary>
     public void SwitchTo(AppMode target)
     {
         if (target == AppMode.Unknown)
@@ -30,22 +34,30 @@ public class ModeService
             ? (_config.Work.AcMinutes, _config.Work.DcMinutes)
             : (_config.Away.AcMinutes, _config.Away.DcMinutes);
 
-        var scheme = _power.GetActiveSchemeGuid();
-        _power.SetVideoIdle(scheme, acMin * 60, dcMin * 60);
+        // No scheme parameter — PowerConfigService uses SCHEME_CURRENT internally
+        _power.SetVideoIdle(acMin * 60, dcMin * 60);
 
         CurrentMode = target;
         ModeChanged?.Invoke(this, target);
     }
 
-    public AppMode MatchCurrentMode(int acSeconds, int dcSeconds)
+    /// <summary>
+    /// Matches the current system VIDEOIDLE values against Work/Away configs.
+    /// Uses long to handle system values exceeding int.MaxValue.
+    /// </summary>
+    public AppMode MatchCurrentMode(long acSeconds, long dcSeconds)
     {
-        if (acSeconds == _config.Work.AcMinutes * 60 && dcSeconds == _config.Work.DcMinutes * 60)
+        if (acSeconds == (long)_config.Work.AcMinutes * 60 && dcSeconds == (long)_config.Work.DcMinutes * 60)
             return AppMode.Work;
-        if (acSeconds == _config.Away.AcMinutes * 60 && dcSeconds == _config.Away.DcMinutes * 60)
+        if (acSeconds == (long)_config.Away.AcMinutes * 60 && dcSeconds == (long)_config.Away.DcMinutes * 60)
             return AppMode.Away;
         return AppMode.Unknown;
     }
 
+    /// <summary>
+    /// Re-applies the current mode's timeout values.
+    /// No-op if CurrentMode is Unknown.
+    /// </summary>
     public void ReapplyCurrentMode()
     {
         if (CurrentMode == AppMode.Unknown) return;
@@ -53,7 +65,6 @@ public class ModeService
             ? (_config.Work.AcMinutes, _config.Work.DcMinutes)
             : (_config.Away.AcMinutes, _config.Away.DcMinutes);
 
-        var scheme = _power.GetActiveSchemeGuid();
-        _power.SetVideoIdle(scheme, acMin * 60, dcMin * 60);
+        _power.SetVideoIdle(acMin * 60, dcMin * 60);
     }
 }

@@ -1,9 +1,9 @@
-using ScreenTimeoutToggle.Models;
-using ScreenTimeoutToggle.Services;
+using OBDim.Models;
+using OBDim.Services;
 using Moq;
 using Xunit;
 
-namespace ScreenTimeoutToggle.Tests;
+namespace OBDim.Tests;
 
 public class ModeServiceTests
 {
@@ -17,14 +17,12 @@ public class ModeServiceTests
     public void SwitchTo_Away_AppliesAwayTimeouts()
     {
         var cfg = Cfg();
-        var scheme = Guid.NewGuid();
         var power = new Mock<PowerConfigService>();
-        power.Setup(p => p.GetActiveSchemeGuid()).Returns(scheme);
         var svc = new ModeService(cfg, power.Object);
 
         svc.SwitchTo(AppMode.Away);
 
-        power.Verify(p => p.SetVideoIdle(scheme, 60, 60), Times.Once); // 1min * 60
+        power.Verify(p => p.SetVideoIdle(60, 60), Times.Once); // 1min * 60
         Assert.Equal(AppMode.Away, svc.CurrentMode);
     }
 
@@ -32,14 +30,12 @@ public class ModeServiceTests
     public void SwitchTo_Work_AppliesWorkTimeouts_WithZeroForNever()
     {
         var cfg = Cfg();
-        var scheme = Guid.NewGuid();
         var power = new Mock<PowerConfigService>();
-        power.Setup(p => p.GetActiveSchemeGuid()).Returns(scheme);
         var svc = new ModeService(cfg, power.Object);
 
         svc.SwitchTo(AppMode.Work);
 
-        power.Verify(p => p.SetVideoIdle(scheme, 0, 1800), Times.Once); // 0 + 30min
+        power.Verify(p => p.SetVideoIdle(0, 1800), Times.Once); // 0 + 30min
         Assert.Equal(AppMode.Work, svc.CurrentMode);
     }
 
@@ -56,7 +52,6 @@ public class ModeServiceTests
     public void SwitchTo_FiresModeChanged()
     {
         var power = new Mock<PowerConfigService>();
-        power.Setup(p => p.GetActiveSchemeGuid()).Returns(Guid.NewGuid());
         var svc = new ModeService(Cfg(), power.Object);
         AppMode? fired = null;
         svc.ModeChanged += (_, m) => fired = m;
@@ -73,7 +68,7 @@ public class ModeServiceTests
         var svc = new ModeService(Cfg(), power.Object);
 
         // Work: AC=0min→0s, DC=30min→1800s
-        Assert.Equal(AppMode.Work, svc.MatchCurrentMode(0, 1800));
+        Assert.Equal(AppMode.Work, svc.MatchCurrentMode(0L, 1800L));
     }
 
     [Fact]
@@ -83,7 +78,7 @@ public class ModeServiceTests
         var svc = new ModeService(Cfg(), power.Object);
 
         // Away: AC=1min→60s, DC=1min→60s
-        Assert.Equal(AppMode.Away, svc.MatchCurrentMode(60, 60));
+        Assert.Equal(AppMode.Away, svc.MatchCurrentMode(60L, 60L));
     }
 
     [Fact]
@@ -92,22 +87,68 @@ public class ModeServiceTests
         var power = new Mock<PowerConfigService>();
         var svc = new ModeService(Cfg(), power.Object);
 
-        Assert.Equal(AppMode.Unknown, svc.MatchCurrentMode(300, 300));
+        Assert.Equal(AppMode.Unknown, svc.MatchCurrentMode(300L, 300L));
     }
 
     [Fact]
     public void ReapplyCurrentMode_ReappliesCurrentTimeouts()
     {
         var cfg = Cfg();
-        var scheme = Guid.NewGuid();
         var power = new Mock<PowerConfigService>();
-        power.Setup(p => p.GetActiveSchemeGuid()).Returns(scheme);
         var svc = new ModeService(cfg, power.Object);
         svc.SwitchTo(AppMode.Work);
         power.Invocations.Clear();
 
         svc.ReapplyCurrentMode();
 
-        power.Verify(p => p.SetVideoIdle(scheme, 0, 1800), Times.Once);
+        power.Verify(p => p.SetVideoIdle(0, 1800), Times.Once);
+    }
+
+    /// <summary>
+    /// New test: UpdateConfig then SwitchTo should use the new config values.
+    /// </summary>
+    [Fact]
+    public void SwitchTo_UsesUpdatedConfig_AfterUpdateConfig()
+    {
+        var power = new Mock<PowerConfigService>();
+        var svc = new ModeService(Cfg(), power.Object);
+
+        var newCfg = Cfg() with
+        {
+            Work = new TimeoutConfig { AcMinutes = 10, DcMinutes = 20 }
+        };
+        svc.UpdateConfig(newCfg);
+
+        svc.SwitchTo(AppMode.Work);
+
+        power.Verify(p => p.SetVideoIdle(600, 1200), Times.Once); // 10min*60, 20min*60
+    }
+
+    /// <summary>
+    /// New test: ReapplyCurrentMode when Unknown should do nothing.
+    /// </summary>
+    [Fact]
+    public void ReapplyCurrentMode_WhenUnknown_DoesNothing()
+    {
+        var power = new Mock<PowerConfigService>();
+        var svc = new ModeService(Cfg(), power.Object);
+        // CurrentMode is Unknown by default
+
+        svc.ReapplyCurrentMode();
+
+        power.Verify(p => p.SetVideoIdle(It.IsAny<int>(), It.IsAny<int>()), Times.Never);
+    }
+
+    /// <summary>
+    /// New test: MatchCurrentMode with large values (exceeding int.MaxValue).
+    /// </summary>
+    [Fact]
+    public void MatchCurrentMode_HandlesLargeValues()
+    {
+        var power = new Mock<PowerConfigService>();
+        var svc = new ModeService(Cfg(), power.Object);
+
+        // Large values that don't match any config
+        Assert.Equal(AppMode.Unknown, svc.MatchCurrentMode(4294967295L, 0L));
     }
 }

@@ -1,8 +1,13 @@
-using ScreenTimeoutToggle.Models;
-using ScreenTimeoutToggle.Services;
+#pragma warning disable CS8618 // WinForms controls initialized in BuildUi, not constructor
 
-namespace ScreenTimeoutToggle.UI;
+using OBDim.Models;
+using OBDim.Services;
 
+namespace OBDim.UI;
+
+/// <summary>
+/// Settings dialog: 4 timeout values + hotkey capture + autostart toggle.
+/// </summary>
 public class SettingsForm : Form
 {
     private readonly AppConfig _initial;
@@ -17,6 +22,7 @@ public class SettingsForm : Form
     private CheckBox _autoStartCheck;
     private Button _okBtn;
     private Button _cancelBtn;
+    private readonly ToolTip _toolTip;
 
     private HotkeyConfig _capturedHotkey;
 
@@ -28,13 +34,14 @@ public class SettingsForm : Form
         _hotkeySvc = hotkeySvc;
         _autoStartSvc = autoStartSvc;
         _capturedHotkey = initial.Hotkey;
+        _toolTip = new ToolTip();
 
-        Text = "Screen Timeout Toggle — Settings";
+        Text = "OB Dim — Settings";
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(340, 310);
+        ClientSize = new Size(340, 340);
 
         BuildUi();
         LoadValues();
@@ -58,15 +65,19 @@ public class SettingsForm : Form
         _hotkeyBox = new TextBox { Left = 24, Top = 204, Width = 176, ReadOnly = true };
         _hotkeyBox.KeyDown += OnHotkeyKeyDown;
 
+        // D3: Explicitly note Win key is not supported in capture
+        var lblWinNote = new Label { Text = "Win key not supported", Left = 208, Top = 207, Width = 120,
+            ForeColor = Color.Gray, Font = new Font(Font.FontFamily, 7f) };
+
         _autoStartCheck = new CheckBox { Text = "Start with Windows", Left = 24, Top = 236, Width = 200 };
 
-        _okBtn = new Button { Text = "OK", Left = 160, Top = 270, Width = 80, DialogResult = DialogResult.OK };
-        _cancelBtn = new Button { Text = "Cancel", Left = 248, Top = 270, Width = 80, DialogResult = DialogResult.Cancel };
+        _okBtn = new Button { Text = "OK", Left = 160, Top = 300, Width = 80, DialogResult = DialogResult.OK };
+        _cancelBtn = new Button { Text = "Cancel", Left = 248, Top = 300, Width = 80, DialogResult = DialogResult.Cancel };
 
         Controls.AddRange(new Control[] {
             lblWork, _workAc, _workDc, lblWorkAc, lblWorkDc,
             lblAway, _awayAc, _awayDc, lblAwayAc, lblAwayDc,
-            lblHotkey, _hotkeyBox,
+            lblHotkey, _hotkeyBox, lblWinNote,
             _autoStartCheck,
             _okBtn, _cancelBtn
         });
@@ -74,6 +85,27 @@ public class SettingsForm : Form
         AcceptButton = _okBtn;
         CancelButton = _cancelBtn;
         _okBtn.Click += OnOkClick;
+
+        // D2: Tooltip for large values
+        _workAc.ValueChanged += (_, _) => CheckLargeValue(_workAc);
+        _workDc.ValueChanged += (_, _) => CheckLargeValue(_workDc);
+        _awayAc.ValueChanged += (_, _) => CheckLargeValue(_awayAc);
+        _awayDc.ValueChanged += (_, _) => CheckLargeValue(_awayDc);
+    }
+
+    /// <summary>
+    /// Shows a tooltip warning when a timeout value exceeds 180 minutes (3 hours).
+    /// </summary>
+    private void CheckLargeValue(NumericUpDown nud)
+    {
+        if (nud.Value > 180)
+        {
+            _toolTip.SetToolTip(nud, "Are you sure? This is more than 3 hours.");
+        }
+        else
+        {
+            _toolTip.SetToolTip(nud, null);
+        }
     }
 
     private void LoadValues()
@@ -86,6 +118,11 @@ public class SettingsForm : Form
         _autoStartCheck.Checked = _autoStartSvc.IsEnabled();
     }
 
+    /// <summary>
+    /// Captures the pressed key combination.
+    /// D1: Validates that at least one modifier is present and the key is valid.
+    /// Invalid combinations are rejected with a MessageBox; previous value is kept.
+    /// </summary>
     private void OnHotkeyKeyDown(object? sender, KeyEventArgs e)
     {
         e.SuppressKeyPress = true;
@@ -100,14 +137,36 @@ public class SettingsForm : Form
         // Ignore pure modifier presses
         if (key is Keys.ControlKey or Keys.Menu or Keys.ShiftKey) return;
 
+        // D1: Require at least one modifier key
+        if (mods.Count == 0)
+        {
+            MessageBox.Show(
+                "A modifier key (Ctrl, Alt, or Shift) is required.",
+                "Invalid Hotkey",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
+        var keyStr = key.ToString();
+
+        // D1: Validate the key is a recognizable virtual key
+        if (HotkeyService.KeyStringToVk(keyStr) == 0)
+        {
+            MessageBox.Show(
+                $"Key '{keyStr}' is not a valid hotkey key. Please press a letter, digit, or function key.",
+                "Invalid Hotkey",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
         _capturedHotkey = new HotkeyConfig
         {
             Modifiers = string.Join("+", mods),
-            Key = key.ToString()
+            Key = keyStr
         };
-        _hotkeyBox.Text = string.IsNullOrEmpty(_capturedHotkey.Modifiers)
-            ? _capturedHotkey.Key
-            : $"{_capturedHotkey.Modifiers}+{_capturedHotkey.Key}";
+        _hotkeyBox.Text = $"{_capturedHotkey.Modifiers}+{_capturedHotkey.Key}";
     }
 
     private void OnOkClick(object? sender, EventArgs e)
@@ -122,3 +181,5 @@ public class SettingsForm : Form
         DialogResult = DialogResult.OK;
     }
 }
+
+#pragma warning restore CS8618
