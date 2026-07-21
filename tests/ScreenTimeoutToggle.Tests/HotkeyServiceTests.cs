@@ -1,3 +1,4 @@
+using System.Windows.Forms;
 using OBDim.Models;
 using OBDim.Services;
 using Xunit;
@@ -226,5 +227,183 @@ public class HotkeyServiceTests
     public void KeyStringToVk_RecognizesF13ToF24(string key, uint expectedVk)
     {
         Assert.Equal(expectedVk, HotkeyService.KeyStringToVk(key));
+    }
+
+    // ===== v1.0.3: Numeric keypad key support tests =====
+
+    /// <summary>
+    /// v1.0.3: KeyStringToVk recognizes numeric keypad digits NumPad0–NumPad9.
+    /// </summary>
+    [Theory]
+    [InlineData("NumPad0", 0x60u)]
+    [InlineData("Numpad0", 0x60u)]   // alias (case-insensitive)
+    [InlineData("NumPad1", 0x61u)]
+    [InlineData("Numpad1", 0x61u)]
+    [InlineData("NumPad2", 0x62u)]
+    [InlineData("Numpad2", 0x62u)]
+    [InlineData("NumPad3", 0x63u)]
+    [InlineData("Numpad3", 0x63u)]
+    [InlineData("NumPad4", 0x64u)]
+    [InlineData("Numpad4", 0x64u)]
+    [InlineData("NumPad5", 0x65u)]
+    [InlineData("Numpad5", 0x65u)]
+    [InlineData("NumPad6", 0x66u)]
+    [InlineData("Numpad6", 0x66u)]
+    [InlineData("NumPad7", 0x67u)]
+    [InlineData("Numpad7", 0x67u)]
+    [InlineData("NumPad8", 0x68u)]
+    [InlineData("Numpad8", 0x68u)]
+    [InlineData("NumPad9", 0x69u)]
+    [InlineData("Numpad9", 0x69u)]
+    public void KeyStringToVk_RecognizesNumPadDigits(string key, uint expectedVk)
+    {
+        Assert.Equal(expectedVk, HotkeyService.KeyStringToVk(key));
+    }
+
+    /// <summary>
+    /// v1.0.3: KeyStringToVk recognizes numeric keypad operator keys.
+    /// </summary>
+    [Theory]
+    [InlineData("Multiply", 0x6Au)]
+    [InlineData("Add", 0x6Bu)]
+    [InlineData("Separator", 0x6Cu)]
+    [InlineData("Subtract", 0x6Du)]
+    [InlineData("Decimal", 0x6Eu)]
+    [InlineData("Divide", 0x6Fu)]
+    public void KeyStringToVk_RecognizesNumPadOperators(string key, uint expectedVk)
+    {
+        Assert.Equal(expectedVk, HotkeyService.KeyStringToVk(key));
+    }
+
+    /// <summary>
+    /// v1.0.3: KeyStringToVk is case-insensitive for numpad keys.
+    /// </summary>
+    [Fact]
+    public void KeyStringToVk_NumPadKeys_CaseInsensitive()
+    {
+        Assert.Equal(0x6Du, HotkeyService.KeyStringToVk("subtract"));
+        Assert.Equal(0x6Du, HotkeyService.KeyStringToVk("SUBTRACT"));
+        Assert.Equal(0x6Bu, HotkeyService.KeyStringToVk("add"));
+        Assert.Equal(0x6Au, HotkeyService.KeyStringToVk("MULTIPLY"));
+        Assert.Equal(0x60u, HotkeyService.KeyStringToVk("numpad0"));
+        Assert.Equal(0x69u, HotkeyService.KeyStringToVk("NUMPAD9"));
+    }
+
+    // ===== v1.0.3: Browser key support tests =====
+
+    /// <summary>
+    /// v1.0.3: KeyStringToVk recognizes browser navigation keys.
+    /// </summary>
+    [Theory]
+    [InlineData("Back", 0xA6u)]
+    [InlineData("BrowserBack", 0xA6u)]       // alias
+    [InlineData("Forward", 0xA7u)]
+    [InlineData("BrowserForward", 0xA7u)]    // alias
+    [InlineData("Refresh", 0xA8u)]
+    [InlineData("BrowserRefresh", 0xA8u)]    // alias
+    [InlineData("Stop", 0xA9u)]
+    [InlineData("BrowserStop", 0xA9u)]       // alias
+    [InlineData("Search", 0xAAu)]
+    [InlineData("BrowserSearch", 0xAAu)]     // alias
+    [InlineData("Favorites", 0xABu)]
+    [InlineData("BrowserFavorites", 0xABu)]  // alias
+    [InlineData("BrowserHome", 0xACu)]
+    public void KeyStringToVk_RecognizesBrowserKeys(string key, uint expectedVk)
+    {
+        Assert.Equal(expectedVk, HotkeyService.KeyStringToVk(key));
+    }
+
+    /// <summary>
+    /// v1.0.3: "Home" must still map to VK_HOME (0x24), NOT VK_BROWSER_HOME (0xAC).
+    /// This is a regression guard — the browser Home key uses "BrowserHome" instead.
+    /// </summary>
+    [Fact]
+    public void KeyStringToVk_Home_StaysNavigationHome_NotBrowserHome()
+    {
+        Assert.Equal(0x24u, HotkeyService.KeyStringToVk("Home"));
+        Assert.Equal(0xACu, HotkeyService.KeyStringToVk("BrowserHome"));
+    }
+
+    // ===== v1.0.3: Volume / media / launch key support tests =====
+
+    /// <summary>
+    /// v1.0.3: KeyStringToVk recognizes volume control keys.
+    /// </summary>
+    [Theory]
+    [InlineData("VolumeMute", 0xADu)]
+    [InlineData("VolumeDown", 0xAEu)]
+    [InlineData("VolumeUp", 0xAFu)]
+    public void KeyStringToVk_RecognizesVolumeKeys(string key, uint expectedVk)
+    {
+        Assert.Equal(expectedVk, HotkeyService.KeyStringToVk(key));
+    }
+
+    /// <summary>
+    /// v1.0.3: KeyStringToVk recognizes media transport keys.
+    /// </summary>
+    [Theory]
+    [InlineData("MediaNextTrack", 0xB0u)]
+    [InlineData("MediaPreviousTrack", 0xB1u)]   // .NET Keys enum full name
+    [InlineData("MediaPrevTrack", 0xB1u)]       // alias (short form)
+    [InlineData("MediaStop", 0xB2u)]
+    [InlineData("MediaPlayPause", 0xB3u)]
+    public void KeyStringToVk_RecognizesMediaKeys(string key, uint expectedVk)
+    {
+        Assert.Equal(expectedVk, HotkeyService.KeyStringToVk(key));
+    }
+
+    /// <summary>
+    /// v1.0.3: KeyStringToVk recognizes the LaunchMail key.
+    /// </summary>
+    [Fact]
+    public void KeyStringToVk_RecognizesLaunchMail()
+    {
+        Assert.Equal(0xB4u, HotkeyService.KeyStringToVk("LaunchMail"));
+    }
+
+    /// <summary>
+    /// v1.0.3: Regression guard — verifies that KeyStringToVk accepts the actual
+    /// .NET Keys enum name (via ToString()) for every newly added key. This
+    /// simulates the real SettingsForm capture path (e.KeyCode.ToString() →
+    /// KeyStringToVk) and catches mismatches like "MediaPrevTrack" vs
+    /// "MediaPreviousTrack".
+    /// </summary>
+    [Theory]
+    [InlineData(Keys.NumPad0, 0x60u)]
+    [InlineData(Keys.NumPad1, 0x61u)]
+    [InlineData(Keys.NumPad2, 0x62u)]
+    [InlineData(Keys.NumPad3, 0x63u)]
+    [InlineData(Keys.NumPad4, 0x64u)]
+    [InlineData(Keys.NumPad5, 0x65u)]
+    [InlineData(Keys.NumPad6, 0x66u)]
+    [InlineData(Keys.NumPad7, 0x67u)]
+    [InlineData(Keys.NumPad8, 0x68u)]
+    [InlineData(Keys.NumPad9, 0x69u)]
+    [InlineData(Keys.Multiply, 0x6Au)]
+    [InlineData(Keys.Add, 0x6Bu)]
+    [InlineData(Keys.Separator, 0x6Cu)]
+    [InlineData(Keys.Subtract, 0x6Du)]
+    [InlineData(Keys.Decimal, 0x6Eu)]
+    [InlineData(Keys.Divide, 0x6Fu)]
+    [InlineData(Keys.BrowserBack, 0xA6u)]
+    [InlineData(Keys.BrowserForward, 0xA7u)]
+    [InlineData(Keys.BrowserRefresh, 0xA8u)]
+    [InlineData(Keys.BrowserStop, 0xA9u)]
+    [InlineData(Keys.BrowserSearch, 0xAAu)]
+    [InlineData(Keys.BrowserFavorites, 0xABu)]
+    [InlineData(Keys.BrowserHome, 0xACu)]
+    [InlineData(Keys.VolumeMute, 0xADu)]
+    [InlineData(Keys.VolumeDown, 0xAEu)]
+    [InlineData(Keys.VolumeUp, 0xAFu)]
+    [InlineData(Keys.MediaNextTrack, 0xB0u)]
+    [InlineData(Keys.MediaPreviousTrack, 0xB1u)]
+    [InlineData(Keys.MediaStop, 0xB2u)]
+    [InlineData(Keys.MediaPlayPause, 0xB3u)]
+    [InlineData(Keys.LaunchMail, 0xB4u)]
+    public void KeyStringToVk_AcceptsActualKeysEnumName(Keys key, uint expectedVk)
+    {
+        // Simulate the real SettingsForm capture path: e.KeyCode.ToString() → KeyStringToVk
+        var keyName = key.ToString();
+        Assert.Equal(expectedVk, HotkeyService.KeyStringToVk(keyName));
     }
 }

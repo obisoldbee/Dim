@@ -122,6 +122,62 @@ public class HotkeyService
             ["Up"] = 0x26,          // VK_UP
             ["Right"] = 0x27,       // VK_RIGHT
             ["Down"] = 0x28,        // VK_DOWN
+
+            // --- v1.0.3: Numeric keypad keys (VK_NUMPAD0 – VK_DIVIDE, 0x60–0x6F) ---
+            ["NumPad0"] = 0x60,     // VK_NUMPAD0
+            ["Numpad0"] = 0x60,     // alias (matched case-insensitively)
+            ["NumPad1"] = 0x61,     // VK_NUMPAD1
+            ["Numpad1"] = 0x61,     // alias
+            ["NumPad2"] = 0x62,     // VK_NUMPAD2
+            ["Numpad2"] = 0x62,     // alias
+            ["NumPad3"] = 0x63,     // VK_NUMPAD3
+            ["Numpad3"] = 0x63,     // alias
+            ["NumPad4"] = 0x64,     // VK_NUMPAD4
+            ["Numpad4"] = 0x64,     // alias
+            ["NumPad5"] = 0x65,     // VK_NUMPAD5
+            ["Numpad5"] = 0x65,     // alias
+            ["NumPad6"] = 0x66,     // VK_NUMPAD6
+            ["Numpad6"] = 0x66,     // alias
+            ["NumPad7"] = 0x67,     // VK_NUMPAD7
+            ["Numpad7"] = 0x67,     // alias
+            ["NumPad8"] = 0x68,     // VK_NUMPAD8
+            ["Numpad8"] = 0x68,     // alias
+            ["NumPad9"] = 0x69,     // VK_NUMPAD9
+            ["Numpad9"] = 0x69,     // alias
+            ["Multiply"] = 0x6A,    // VK_MULTIPLY
+            ["Add"] = 0x6B,         // VK_ADD
+            ["Separator"] = 0x6C,   // VK_SEPARATOR
+            ["Subtract"] = 0x6D,    // VK_SUBTRACT
+            ["Decimal"] = 0x6E,     // VK_DECIMAL
+            ["Divide"] = 0x6F,      // VK_DIVIDE
+
+            // --- v1.0.3: Browser keys (0xA6–0xAC) ---
+            // Note: "Home" is NOT remapped here — it stays as VK_HOME (0x24) above.
+            //       Use "BrowserHome" for VK_BROWSER_HOME (0xAC).
+            ["Back"] = 0xA6,              // VK_BROWSER_BACK
+            ["BrowserBack"] = 0xA6,       // alias
+            ["Forward"] = 0xA7,           // VK_BROWSER_FORWARD
+            ["BrowserForward"] = 0xA7,    // alias
+            ["Refresh"] = 0xA8,           // VK_BROWSER_REFRESH
+            ["BrowserRefresh"] = 0xA8,    // alias
+            ["Stop"] = 0xA9,              // VK_BROWSER_STOP
+            ["BrowserStop"] = 0xA9,       // alias
+            ["Search"] = 0xAA,            // VK_BROWSER_SEARCH
+            ["BrowserSearch"] = 0xAA,     // alias
+            ["Favorites"] = 0xAB,         // VK_BROWSER_FAVORITES
+            ["BrowserFavorites"] = 0xAB,  // alias
+            ["BrowserHome"] = 0xAC,       // VK_BROWSER_HOME
+
+            // --- v1.0.3: Volume / media / launch keys (0xAD–0xB4) ---
+            ["VolumeMute"] = 0xAD,        // VK_VOLUME_MUTE
+            ["VolumeDown"] = 0xAE,        // VK_VOLUME_DOWN
+            ["VolumeUp"] = 0xAF,          // VK_VOLUME_UP
+            ["MediaNextTrack"] = 0xB0,    // VK_MEDIA_NEXT_TRACK
+            ["MediaPreviousTrack"] = 0xB1, // VK_MEDIA_PREV_TRACK (.NET Keys enum full name)
+            ["MediaPrevTrack"] = 0xB1,     // alias (short form)
+            ["MediaStop"] = 0xB2,         // VK_MEDIA_STOP
+            ["MediaPlayPause"] = 0xB3,    // VK_MEDIA_PLAY_PAUSE
+            ["LaunchMail"] = 0xB4,        // VK_LAUNCH_MAIL
         };
 
     /// <summary>
