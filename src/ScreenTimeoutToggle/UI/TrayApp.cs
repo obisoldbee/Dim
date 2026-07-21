@@ -49,6 +49,9 @@ public class TrayApp : ApplicationContext
         _autoStartSvc = autoStartSvc;
         _config = initialConfig;
 
+        // Set localization language from config (also set by Program.cs for early messages)
+        LocalizationService.CurrentLanguage = _config.Language;
+
         // Hidden control for thread marshaling (NotifyIcon is not a Control)
         _syncRoot = new Control();
 
@@ -78,8 +81,8 @@ public class TrayApp : ApplicationContext
         // Register global hotkey (non-fatal if it fails)
         if (!_hotkeySvc.Register(_config.Hotkey))
         {
-            ShowBubble("Hotkey unavailable",
-                       $"Hotkey {_config.Hotkey.Modifiers}+{_config.Hotkey.Key} could not be registered.",
+            ShowBubble(LocalizationService.Get("bubble.hotkey_unavailable_title"),
+                       LocalizationService.Get("bubble.hotkey_unavailable", _config.Hotkey.Modifiers, _config.Hotkey.Key),
                        ToolTipIcon.Warning);
         }
         _hotkeySvc.HotkeyPressed += OnHotkeyPressed;
@@ -116,12 +119,12 @@ public class TrayApp : ApplicationContext
     private void BuildContextMenu()
     {
         var menu = new ContextMenuStrip();
-        var switchItem = new ToolStripMenuItem("Switch to Away", null, async (_, _) => await ToggleModeAsync())
+        var switchItem = new ToolStripMenuItem(LocalizationService.Get("menu.switch_to_away"), null, async (_, _) => await ToggleModeAsync())
         {
             Name = "switchItem"
         };
-        var settingsItem = new ToolStripMenuItem("Settings...", null, (_, _) => OpenSettings());
-        var exitItem = new ToolStripMenuItem("Exit", null, (_, _) => ExitApp());
+        var settingsItem = new ToolStripMenuItem(LocalizationService.Get("menu.settings"), null, (_, _) => OpenSettings());
+        var exitItem = new ToolStripMenuItem(LocalizationService.Get("menu.exit"), null, (_, _) => ExitApp());
 
         menu.Items.AddRange(new ToolStripItem[] { switchItem, settingsItem, new ToolStripSeparator(), exitItem });
         _notify.ContextMenuStrip = menu;
@@ -152,7 +155,7 @@ public class TrayApp : ApplicationContext
         {
             // A2: catch all exceptions (not just PowerConfigException)
             LogService.Error("Switch failed", ex);
-            ShowBubble("Switch failed", ex.Message, ToolTipIcon.Error);
+            ShowBubble(LocalizationService.Get("bubble.switch_failed_title"), ex.Message, ToolTipIcon.Error);
         }
     }
 
@@ -183,7 +186,10 @@ public class TrayApp : ApplicationContext
         _notify.Icon = IconFor(mode);
         _notify.Text = TooltipFor(mode);
         UpdateSwitchMenuItem();
-        ShowBubble("Mode changed", $"Switched to {mode} mode", ToolTipIcon.Info);
+        var modeName = ModeDisplayName(mode);
+        ShowBubble(LocalizationService.Get("bubble.mode_changed_title"),
+                   LocalizationService.Get("bubble.mode_changed", modeName),
+                   ToolTipIcon.Info);
         LogService.Info($"Mode changed to {mode}");
     }
 
@@ -191,7 +197,9 @@ public class TrayApp : ApplicationContext
     {
         if (_notify.ContextMenuStrip?.Items["switchItem"] is ToolStripMenuItem item)
         {
-            item.Text = _modeSvc.CurrentMode == AppMode.Work ? "Switch to Away" : "Switch to Work";
+            item.Text = _modeSvc.CurrentMode == AppMode.Work
+                ? LocalizationService.Get("menu.switch_to_away")
+                : LocalizationService.Get("menu.switch_to_work");
         }
     }
 
@@ -217,8 +225,8 @@ public class TrayApp : ApplicationContext
                 {
                     // New key failed — try to restore old key
                     _hotkeySvc.Register(oldCfg.Hotkey);
-                    ShowBubble("Hotkey change failed",
-                               $"Hotkey {newCfg.Hotkey.Modifiers}+{newCfg.Hotkey.Key} is in use. Reverted to previous.",
+                    ShowBubble(LocalizationService.Get("bubble.hotkey_change_failed_title"),
+                               LocalizationService.Get("bubble.hotkey_change_failed", newCfg.Hotkey.Modifiers, newCfg.Hotkey.Key),
                                ToolTipIcon.Warning);
                     LogService.Warn($"Hotkey change to {newCfg.Hotkey.Modifiers}+{newCfg.Hotkey.Key} failed, reverted to {oldCfg.Hotkey.Modifiers}+{oldCfg.Hotkey.Key}");
                 }
@@ -245,6 +253,18 @@ public class TrayApp : ApplicationContext
                 _modeSvc.ReapplyCurrentMode();
             }
 
+            // Language change: update runtime language, rebuild menu, notify user
+            if (newCfg.Language != oldCfg.Language)
+            {
+                LocalizationService.CurrentLanguage = newCfg.Language;
+                BuildContextMenu();
+                UpdateSwitchMenuItem();
+                var langName = LocalizationService.GetLanguageDisplayName(newCfg.Language);
+                ShowBubble(LocalizationService.Get("bubble.language_changed_title"),
+                           LocalizationService.Get("bubble.language_changed", langName),
+                           ToolTipIcon.Info);
+            }
+
             _notify.Text = TooltipFor(_modeSvc.CurrentMode);
         }
     }
@@ -268,10 +288,30 @@ public class TrayApp : ApplicationContext
         var (acMin, dcMin) = mode == AppMode.Away
             ? (_config.Away.AcMinutes, _config.Away.DcMinutes)
             : (_config.Work.AcMinutes, _config.Work.DcMinutes);
-        var acTxt = acMin == 0 ? "Never" : $"{acMin}min";
-        var dcTxt = dcMin == 0 ? "Never" : $"{dcMin}min";
-        return $"{mode} · AC {acTxt} / DC {dcTxt}";
+        var acTxt = acMin == 0
+            ? LocalizationService.Get("common.never")
+            : LocalizationService.Get("common.minutes", acMin);
+        var dcTxt = dcMin == 0
+            ? LocalizationService.Get("common.never")
+            : LocalizationService.Get("common.minutes", dcMin);
+        var tooltipKey = mode switch
+        {
+            AppMode.Work => "tooltip.work",
+            AppMode.Away => "tooltip.away",
+            _ => "tooltip.unknown"
+        };
+        return LocalizationService.Get(tooltipKey, acTxt, dcTxt);
     }
+
+    /// <summary>
+    /// Returns the localized display name for an AppMode.
+    /// </summary>
+    private static string ModeDisplayName(AppMode mode) => mode switch
+    {
+        AppMode.Work => LocalizationService.Get("mode.work"),
+        AppMode.Away => LocalizationService.Get("mode.away"),
+        _ => LocalizationService.Get("mode.unknown")
+    };
 
     private void ShowBubble(string title, string text, ToolTipIcon icon)
     {

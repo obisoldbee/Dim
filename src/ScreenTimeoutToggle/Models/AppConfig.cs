@@ -25,6 +25,7 @@ public record AppConfig
     public HotkeyConfig Hotkey { get; init; } = HotkeyConfig.CreateDefault();
     public bool AutoStart { get; init; } = true;
     public AppMode CurrentMode { get; init; } = AppMode.Work;
+    public string Language { get; init; } = "zh-CN";
 
     public static AppConfig CreateDefault() => new();
 }

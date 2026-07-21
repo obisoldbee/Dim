@@ -95,7 +95,37 @@ public class HotkeyService
     }
 
     /// <summary>
-    /// Converts a key string (e.g., "S", "F5", "1") to a Win32 virtual-key code.
+    /// Named virtual-key codes for keys that are not single letters/digits or F1-F24.
+    /// Keys are matched case-insensitively. Includes both the Keys enum name and
+    /// common aliases (e.g., "ScrollLock" for "Scroll").
+    /// </summary>
+    private static readonly Dictionary<string, uint> NamedKeys =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["PrintScreen"] = 0x2C, // VK_SNAPSHOT
+            ["Snapshot"] = 0x2C,    // alias used by some WinForms versions
+            ["Pause"] = 0x13,       // VK_PAUSE
+            ["Scroll"] = 0x91,      // VK_SCROLL
+            ["ScrollLock"] = 0x91,  // alias
+            ["Capital"] = 0x14,     // VK_CAPITAL (CapsLock)
+            ["CapsLock"] = 0x14,    // alias
+            ["NumLock"] = 0x90,     // VK_NUMLOCK
+            ["Insert"] = 0x2D,      // VK_INSERT
+            ["Delete"] = 0x2E,      // VK_DELETE
+            ["Home"] = 0x24,        // VK_HOME
+            ["End"] = 0x23,         // VK_END
+            ["PageUp"] = 0x21,      // VK_PRIOR
+            ["Prior"] = 0x21,       // alias
+            ["PageDown"] = 0x22,    // VK_NEXT
+            ["Next"] = 0x22,        // alias
+            ["Left"] = 0x25,        // VK_LEFT
+            ["Up"] = 0x26,          // VK_UP
+            ["Right"] = 0x27,       // VK_RIGHT
+            ["Down"] = 0x28,        // VK_DOWN
+        };
+
+    /// <summary>
+    /// Converts a key string (e.g., "S", "F5", "1", "PrintScreen") to a Win32 virtual-key code.
     /// Returns 0 for unrecognized keys.
     /// </summary>
     public static uint KeyStringToVk(string key)
@@ -112,6 +142,9 @@ public class HotkeyService
         // F1-F24
         if (key.StartsWith('F') && int.TryParse(key[1..], out int fn) && fn is >= 1 and <= 24)
             return (uint)(0x6F + fn); // F1=0x70
+        // Named keys (PrintScreen, Pause, ScrollLock, etc.)
+        if (NamedKeys.TryGetValue(key, out uint namedVk))
+            return namedVk;
         return 0;
     }
 }

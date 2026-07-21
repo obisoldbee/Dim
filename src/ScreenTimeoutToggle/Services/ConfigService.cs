@@ -92,7 +92,8 @@ public class ConfigService
             Away = MergeTimeout(nullable.Away, def.Away),
             Hotkey = MergeHotkey(nullable.Hotkey, def.Hotkey),
             AutoStart = nullable.AutoStart ?? def.AutoStart,
-            CurrentMode = ResolveCurrentMode(nullable.CurrentMode, def.CurrentMode)
+            CurrentMode = ResolveCurrentMode(nullable.CurrentMode, def.CurrentMode),
+            Language = string.IsNullOrWhiteSpace(nullable.Language) ? def.Language : nullable.Language
         };
 
         return Migrate(cfg, cfg.Version);
@@ -192,6 +193,7 @@ public class ConfigService
         public NullableHotkeyConfig? Hotkey { get; set; }
         public bool? AutoStart { get; set; }
         public AppMode? CurrentMode { get; set; }
+        public string? Language { get; set; }
     }
 
     private class NullableTimeoutConfig

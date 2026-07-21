@@ -6,7 +6,7 @@ using OBDim.Services;
 namespace OBDim.UI;
 
 /// <summary>
-/// Settings dialog: 4 timeout values + hotkey capture + autostart toggle.
+/// Settings dialog: 4 timeout values + hotkey capture + autostart toggle + language selector.
 /// </summary>
 public class SettingsForm : Form
 {
@@ -20,6 +20,7 @@ public class SettingsForm : Form
     private NumericUpDown _awayDc;
     private TextBox _hotkeyBox;
     private CheckBox _autoStartCheck;
+    private ComboBox _languageBox;
     private Button _okBtn;
     private Button _cancelBtn;
     private readonly ToolTip _toolTip;
@@ -36,12 +37,12 @@ public class SettingsForm : Form
         _capturedHotkey = initial.Hotkey;
         _toolTip = new ToolTip();
 
-        Text = "OB Dim — Settings";
+        Text = LocalizationService.Get("settings.title");
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(340, 340);
+        ClientSize = new Size(340, 360);
 
         BuildUi();
         LoadValues();
@@ -49,36 +50,48 @@ public class SettingsForm : Form
 
     private void BuildUi()
     {
-        var lblWork = new Label { Text = "Work mode (minutes, 0 = never)", Left = 16, Top = 16, Width = 300 };
+        var lblWork = new Label { Text = LocalizationService.Get("settings.work_mode"), Left = 16, Top = 16, Width = 300 };
         _workAc = new NumericUpDown { Left = 24, Top = 40, Width = 80, Minimum = 0, Maximum = 99999 };
         _workDc = new NumericUpDown { Left = 120, Top = 40, Width = 80, Minimum = 0, Maximum = 99999 };
-        var lblWorkAc = new Label { Text = "Plugged", Left = 24, Top = 64, Width = 80 };
-        var lblWorkDc = new Label { Text = "Battery", Left = 120, Top = 64, Width = 80 };
+        var lblWorkAc = new Label { Text = LocalizationService.Get("settings.plugged"), Left = 24, Top = 64, Width = 80 };
+        var lblWorkDc = new Label { Text = LocalizationService.Get("settings.battery"), Left = 120, Top = 64, Width = 80 };
 
-        var lblAway = new Label { Text = "Away mode (minutes, 0 = never)", Left = 16, Top = 98, Width = 300 };
+        var lblAway = new Label { Text = LocalizationService.Get("settings.away_mode"), Left = 16, Top = 98, Width = 300 };
         _awayAc = new NumericUpDown { Left = 24, Top = 122, Width = 80, Minimum = 0, Maximum = 99999 };
         _awayDc = new NumericUpDown { Left = 120, Top = 122, Width = 80, Minimum = 0, Maximum = 99999 };
-        var lblAwayAc = new Label { Text = "Plugged", Left = 24, Top = 146, Width = 80 };
-        var lblAwayDc = new Label { Text = "Battery", Left = 120, Top = 146, Width = 80 };
+        var lblAwayAc = new Label { Text = LocalizationService.Get("settings.plugged"), Left = 24, Top = 146, Width = 80 };
+        var lblAwayDc = new Label { Text = LocalizationService.Get("settings.battery"), Left = 120, Top = 146, Width = 80 };
 
-        var lblHotkey = new Label { Text = "Hotkey (click box, then press keys)", Left = 16, Top = 180, Width = 300 };
+        var lblHotkey = new Label { Text = LocalizationService.Get("settings.hotkey_label"), Left = 16, Top = 180, Width = 300 };
         _hotkeyBox = new TextBox { Left = 24, Top = 204, Width = 176, ReadOnly = true };
         _hotkeyBox.KeyDown += OnHotkeyKeyDown;
 
         // D3: Explicitly note Win key is not supported in capture
-        var lblWinNote = new Label { Text = "Win key not supported", Left = 208, Top = 207, Width = 120,
+        var lblWinNote = new Label { Text = LocalizationService.Get("settings.win_note"), Left = 208, Top = 207, Width = 120,
             ForeColor = Color.Gray, Font = new Font(Font.FontFamily, 7f) };
 
-        _autoStartCheck = new CheckBox { Text = "Start with Windows", Left = 24, Top = 236, Width = 200 };
+        _autoStartCheck = new CheckBox { Text = LocalizationService.Get("settings.autostart"), Left = 24, Top = 236, Width = 200 };
 
-        _okBtn = new Button { Text = "OK", Left = 160, Top = 300, Width = 80, DialogResult = DialogResult.OK };
-        _cancelBtn = new Button { Text = "Cancel", Left = 248, Top = 300, Width = 80, DialogResult = DialogResult.Cancel };
+        // Language selector
+        var lblLanguage = new Label { Text = LocalizationService.Get("settings.language"), Left = 24, Top = 266, Width = 80 };
+        _languageBox = new ComboBox
+        {
+            Left = 120,
+            Top = 263,
+            Width = 120,
+            DropDownStyle = ComboBoxStyle.DropDownList
+        };
+        _languageBox.Items.AddRange(new object[] { "中文", "English" });
+
+        _okBtn = new Button { Text = LocalizationService.Get("settings.ok"), Left = 160, Top = 320, Width = 80, DialogResult = DialogResult.OK };
+        _cancelBtn = new Button { Text = LocalizationService.Get("settings.cancel"), Left = 248, Top = 320, Width = 80, DialogResult = DialogResult.Cancel };
 
         Controls.AddRange(new Control[] {
             lblWork, _workAc, _workDc, lblWorkAc, lblWorkDc,
             lblAway, _awayAc, _awayDc, lblAwayAc, lblAwayDc,
             lblHotkey, _hotkeyBox, lblWinNote,
             _autoStartCheck,
+            lblLanguage, _languageBox,
             _okBtn, _cancelBtn
         });
 
@@ -100,7 +113,7 @@ public class SettingsForm : Form
     {
         if (nud.Value > 180)
         {
-            _toolTip.SetToolTip(nud, "Are you sure? This is more than 3 hours.");
+            _toolTip.SetToolTip(nud, LocalizationService.Get("settings.large_value_warning"));
         }
         else
         {
@@ -116,12 +129,14 @@ public class SettingsForm : Form
         _awayDc.Value = _initial.Away.DcMinutes;
         _hotkeyBox.Text = $"{_initial.Hotkey.Modifiers}+{_initial.Hotkey.Key}";
         _autoStartCheck.Checked = _autoStartSvc.IsEnabled();
+        _languageBox.SelectedIndex = _initial.Language == "en-US" ? 1 : 0;
     }
 
     /// <summary>
     /// Captures the pressed key combination.
-    /// D1: Validates that at least one modifier is present and the key is valid.
-    /// Invalid combinations are rejected with a MessageBox; previous value is kept.
+    /// v1.0.2: Relaxed validation — function keys (F1-F24, PrintScreen, Pause, etc.)
+    /// are allowed without modifiers. Letter/digit keys without modifiers show a
+    /// confirmation warning but are still permitted. The key must be a valid VK.
     /// </summary>
     private void OnHotkeyKeyDown(object? sender, KeyEventArgs e)
     {
@@ -137,28 +152,28 @@ public class SettingsForm : Form
         // Ignore pure modifier presses
         if (key is Keys.ControlKey or Keys.Menu or Keys.ShiftKey) return;
 
-        // D1: Require at least one modifier key
-        if (mods.Count == 0)
+        var keyStr = key.ToString();
+
+        // Validate the key is a recognizable virtual key
+        if (HotkeyService.KeyStringToVk(keyStr) == 0)
         {
             MessageBox.Show(
-                "A modifier key (Ctrl, Alt, or Shift) is required.",
-                "Invalid Hotkey",
+                LocalizationService.Get("hotkey.invalid_key", keyStr),
+                LocalizationService.Get("hotkey.invalid_title"),
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
             return;
         }
 
-        var keyStr = key.ToString();
-
-        // D1: Validate the key is a recognizable virtual key
-        if (HotkeyService.KeyStringToVk(keyStr) == 0)
+        // v1.0.2: No modifier required for function keys; warn for others
+        if (mods.Count == 0 && !IsFunctionKey(keyStr))
         {
-            MessageBox.Show(
-                $"Key '{keyStr}' is not a valid hotkey key. Please press a letter, digit, or function key.",
-                "Invalid Hotkey",
-                MessageBoxButtons.OK,
+            var confirm = MessageBox.Show(
+                LocalizationService.Get("hotkey.single_key_warning"),
+                LocalizationService.Get("hotkey.single_key_warning_title"),
+                MessageBoxButtons.YesNo,
                 MessageBoxIcon.Warning);
-            return;
+            if (confirm != DialogResult.Yes) return;
         }
 
         _capturedHotkey = new HotkeyConfig
@@ -169,14 +184,42 @@ public class SettingsForm : Form
         _hotkeyBox.Text = $"{_capturedHotkey.Modifiers}+{_capturedHotkey.Key}";
     }
 
+    /// <summary>
+    /// Determines whether a key string represents a function key that is safe to use
+    /// as a single-key hotkey (no modifier needed). Includes F1-F24, PrintScreen,
+    /// Pause, ScrollLock, NumLock, and CapsLock.
+    /// </summary>
+    private static bool IsFunctionKey(string key)
+    {
+        if (string.IsNullOrWhiteSpace(key)) return false;
+        key = key.Trim().ToUpperInvariant();
+
+        // F1-F24
+        if (key.StartsWith('F') && int.TryParse(key[1..], out int fn) && fn is >= 1 and <= 24)
+            return true;
+
+        // Named function keys (match both Keys enum names and common aliases)
+        return key switch
+        {
+            "PRINTSCREEN" or "SNAPSHOT" => true,
+            "PAUSE" => true,
+            "SCROLL" or "SCROLLLOCK" => true,
+            "CAPITAL" or "CAPSLOCK" => true,
+            "NUMLOCK" => true,
+            _ => false
+        };
+    }
+
     private void OnOkClick(object? sender, EventArgs e)
     {
+        var selectedLanguage = _languageBox.SelectedIndex == 1 ? "en-US" : "zh-CN";
         Result = _initial with
         {
             Work = new TimeoutConfig { AcMinutes = (int)_workAc.Value, DcMinutes = (int)_workDc.Value },
             Away = new TimeoutConfig { AcMinutes = (int)_awayAc.Value, DcMinutes = (int)_awayDc.Value },
             Hotkey = _capturedHotkey,
-            AutoStart = _autoStartCheck.Checked
+            AutoStart = _autoStartCheck.Checked,
+            Language = selectedLanguage
         };
         DialogResult = DialogResult.OK;
     }

@@ -1,3 +1,4 @@
+using OBDim.Models;
 using OBDim.Services;
 using OBDim.UI;
 
@@ -14,6 +15,19 @@ internal static class Program
     private static void Main()
     {
         ApplicationConfiguration.Initialize();
+
+        // Load config early to set localization language for all UI messages
+        var configSvc = ConfigService.CreateDefault();
+        AppConfig initialCfg;
+        try
+        {
+            initialCfg = configSvc.Load();
+        }
+        catch
+        {
+            initialCfg = AppConfig.CreateDefault();
+        }
+        LocalizationService.CurrentLanguage = initialCfg.Language;
 
         // Single instance check with fallback for restricted users (H2)
         Mutex? mutex = null;
@@ -43,7 +57,8 @@ internal static class Program
         if (!createdNew)
         {
             // H3: Notify user instead of silent exit
-            MessageBox.Show("OB Dim is already running.", "OB Dim",
+            MessageBox.Show(LocalizationService.Get("error.already_running"),
+                LocalizationService.Get("error.app_title"),
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
             mutex?.Dispose();
             return;
@@ -52,9 +67,7 @@ internal static class Program
         try
         {
             // C5: Load config once and pass the same instance to ModeService and TrayApp
-            var configSvc = ConfigService.CreateDefault();
             var powerSvc = new PowerConfigService();
-            var initialCfg = configSvc.Load();
             var modeSvc = new ModeService(initialCfg, powerSvc);
             // hwnd is IntPtr.Zero for now — TrayApp's hidden window will SetHwnd after creating its handle.
             var hotkeySvc = new HotkeyService(IntPtr.Zero);
@@ -68,7 +81,8 @@ internal static class Program
         {
             // C3/H1: Catch all unhandled exceptions and show user-friendly error
             LogService.Error("OB Dim failed to start", ex);
-            MessageBox.Show($"OB Dim failed to start: {ex.Message}", "OB Dim",
+            MessageBox.Show(LocalizationService.Get("error.startup_failed", ex.Message),
+                LocalizationService.Get("error.app_title"),
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally

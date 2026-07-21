@@ -119,4 +119,112 @@ public class HotkeyServiceTests
     {
         Assert.Equal(0u, HotkeyService.KeyStringToVk(key));
     }
+
+    // ===== v1.0.2: Named key support tests =====
+
+    /// <summary>
+    /// v1.0.2: KeyStringToVk recognizes PrintScreen (VK_SNAPSHOT = 0x2C).
+    /// </summary>
+    [Theory]
+    [InlineData("PrintScreen", 0x2Cu)]
+    [InlineData("Snapshot", 0x2Cu)]   // alias
+    public void KeyStringToVk_RecognizesPrintScreen(string key, uint expectedVk)
+    {
+        Assert.Equal(expectedVk, HotkeyService.KeyStringToVk(key));
+    }
+
+    /// <summary>
+    /// v1.0.2: KeyStringToVk recognizes Pause (VK_PAUSE = 0x13).
+    /// </summary>
+    [Fact]
+    public void KeyStringToVk_RecognizesPause()
+    {
+        Assert.Equal(0x13u, HotkeyService.KeyStringToVk("Pause"));
+    }
+
+    /// <summary>
+    /// v1.0.2: KeyStringToVk recognizes ScrollLock (VK_SCROLL = 0x91).
+    /// </summary>
+    [Theory]
+    [InlineData("Scroll", 0x91u)]
+    [InlineData("ScrollLock", 0x91u)]  // alias
+    public void KeyStringToVk_RecognizesScrollLock(string key, uint expectedVk)
+    {
+        Assert.Equal(expectedVk, HotkeyService.KeyStringToVk(key));
+    }
+
+    /// <summary>
+    /// v1.0.2: KeyStringToVk recognizes CapsLock (VK_CAPITAL = 0x14).
+    /// </summary>
+    [Theory]
+    [InlineData("Capital", 0x14u)]
+    [InlineData("CapsLock", 0x14u)]  // alias
+    public void KeyStringToVk_RecognizesCapsLock(string key, uint expectedVk)
+    {
+        Assert.Equal(expectedVk, HotkeyService.KeyStringToVk(key));
+    }
+
+    /// <summary>
+    /// v1.0.2: KeyStringToVk recognizes NumLock (VK_NUMLOCK = 0x90).
+    /// </summary>
+    [Fact]
+    public void KeyStringToVk_RecognizesNumLock()
+    {
+        Assert.Equal(0x90u, HotkeyService.KeyStringToVk("NumLock"));
+    }
+
+    /// <summary>
+    /// v1.0.2: KeyStringToVk recognizes navigation keys (Insert, Delete, Home, End, etc.).
+    /// </summary>
+    [Theory]
+    [InlineData("Insert", 0x2Du)]
+    [InlineData("Delete", 0x2Eu)]
+    [InlineData("Home", 0x24u)]
+    [InlineData("End", 0x23u)]
+    [InlineData("PageUp", 0x21u)]
+    [InlineData("Prior", 0x21u)]      // alias for PageUp
+    [InlineData("PageDown", 0x22u)]
+    [InlineData("Next", 0x22u)]       // alias for PageDown
+    public void KeyStringToVk_RecognizesNavigationKeys(string key, uint expectedVk)
+    {
+        Assert.Equal(expectedVk, HotkeyService.KeyStringToVk(key));
+    }
+
+    /// <summary>
+    /// v1.0.2: KeyStringToVk recognizes arrow keys.
+    /// </summary>
+    [Theory]
+    [InlineData("Left", 0x25u)]
+    [InlineData("Up", 0x26u)]
+    [InlineData("Right", 0x27u)]
+    [InlineData("Down", 0x28u)]
+    public void KeyStringToVk_RecognizesArrowKeys(string key, uint expectedVk)
+    {
+        Assert.Equal(expectedVk, HotkeyService.KeyStringToVk(key));
+    }
+
+    /// <summary>
+    /// v1.0.2: KeyStringToVk is case-insensitive for named keys.
+    /// </summary>
+    [Fact]
+    public void KeyStringToVk_NamedKeys_CaseInsensitive()
+    {
+        Assert.Equal(0x2Cu, HotkeyService.KeyStringToVk("printscreen"));
+        Assert.Equal(0x2Cu, HotkeyService.KeyStringToVk("PRINTSCREEN"));
+        Assert.Equal(0x13u, HotkeyService.KeyStringToVk("pause"));
+        Assert.Equal(0x91u, HotkeyService.KeyStringToVk("SCROLLLOCK"));
+    }
+
+    /// <summary>
+    /// v1.0.2: F13-F24 should still work (already supported in v1.0.1, verify regression).
+    /// </summary>
+    [Theory]
+    [InlineData("F13", 0x7Cu)]
+    [InlineData("F16", 0x7Fu)]
+    [InlineData("F20", 0x83u)]
+    [InlineData("F24", 0x87u)]
+    public void KeyStringToVk_RecognizesF13ToF24(string key, uint expectedVk)
+    {
+        Assert.Equal(expectedVk, HotkeyService.KeyStringToVk(key));
+    }
 }

@@ -230,4 +230,104 @@ public class ConfigServiceTests
         // JsonException triggers backup + default return
         Assert.Equal(AppMode.Work, cfg.CurrentMode); // factory default
     }
+
+    // ===== v1.0.2: Language field tests =====
+
+    /// <summary>
+    /// v1.0.2: Default config should have Language = "zh-CN".
+    /// </summary>
+    [Fact]
+    public void Load_MissingFile_LanguageDefaultsToZhCn()
+    {
+        var path = TempFile();
+        var svc = new ConfigService(path);
+
+        var cfg = svc.Load();
+
+        Assert.Equal("zh-CN", cfg.Language);
+    }
+
+    /// <summary>
+    /// v1.0.2: Language field should round-trip through save/load.
+    /// </summary>
+    [Fact]
+    public void Save_ThenLoad_RoundTripsLanguage()
+    {
+        var path = TempFile();
+        var svc = new ConfigService(path);
+        var original = new AppConfig
+        {
+            Work = new TimeoutConfig { AcMinutes = 5, DcMinutes = 10 },
+            Away = new TimeoutConfig { AcMinutes = 2, DcMinutes = 1 },
+            Hotkey = new HotkeyConfig { Modifiers = "Ctrl+Shift", Key = "F5" },
+            AutoStart = false,
+            CurrentMode = AppMode.Away,
+            Language = "en-US"
+        };
+
+        svc.Save(original);
+        var loaded = svc.Load();
+
+        Assert.Equal("en-US", loaded.Language);
+    }
+
+    /// <summary>
+    /// v1.0.2: Missing language field in JSON should default to "zh-CN".
+    /// </summary>
+    [Fact]
+    public void Load_MissingLanguageField_UsesDefaultZhCn()
+    {
+        var path = TempFile();
+        File.WriteAllText(path, """{"version":1,"work":{"acMinutes":5,"dcMinutes":10}}""");
+        var svc = new ConfigService(path);
+
+        var cfg = svc.Load();
+
+        Assert.Equal("zh-CN", cfg.Language);
+    }
+
+    /// <summary>
+    /// v1.0.2: Explicit null language in JSON should default to "zh-CN".
+    /// </summary>
+    [Fact]
+    public void Load_NullLanguageField_UsesDefaultZhCn()
+    {
+        var path = TempFile();
+        File.WriteAllText(path, """{"version":1,"language":null,"work":{"acMinutes":5,"dcMinutes":10}}""");
+        var svc = new ConfigService(path);
+
+        var cfg = svc.Load();
+
+        Assert.Equal("zh-CN", cfg.Language);
+    }
+
+    /// <summary>
+    /// v1.0.2: Empty string language in JSON should default to "zh-CN".
+    /// </summary>
+    [Fact]
+    public void Load_EmptyLanguageField_UsesDefaultZhCn()
+    {
+        var path = TempFile();
+        File.WriteAllText(path, """{"version":1,"language":"","work":{"acMinutes":5,"dcMinutes":10}}""");
+        var svc = new ConfigService(path);
+
+        var cfg = svc.Load();
+
+        Assert.Equal("zh-CN", cfg.Language);
+    }
+
+    /// <summary>
+    /// v1.0.2: Whitespace-only language in JSON should default to "zh-CN".
+    /// </summary>
+    [Fact]
+    public void Load_WhitespaceLanguageField_UsesDefaultZhCn()
+    {
+        var path = TempFile();
+        File.WriteAllText(path, """{"version":1,"language":"   ","work":{"acMinutes":5,"dcMinutes":10}}""");
+        var svc = new ConfigService(path);
+
+        var cfg = svc.Load();
+
+        Assert.Equal("zh-CN", cfg.Language);
+    }
 }
