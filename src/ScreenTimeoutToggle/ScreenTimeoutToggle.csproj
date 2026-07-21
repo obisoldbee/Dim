@@ -9,6 +9,7 @@
     <AssemblyName>OBDim</AssemblyName>
     <RootNamespace>OBDim</RootNamespace>
     <Version>1.0.1</Version>
+    <ApplicationIcon>assets\obdim.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
