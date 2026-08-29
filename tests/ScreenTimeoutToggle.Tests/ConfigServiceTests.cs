@@ -328,8 +328,8 @@ public class ConfigServiceTests : IDisposable
     }
 
     /// <summary>
-    /// v1.0.7: the four new bubble keys and the new tooltip key must exist in every
-    /// supported language, or the UI degrades to the raw key name.
+    /// v1.0.7 / v1.0.8: the four new bubble keys and the new tooltip keys must exist in
+    /// every supported language, or the UI degrades to the raw key name.
     /// </summary>
     [Theory]
     [InlineData("bubble.save_failed_title")]
@@ -337,7 +337,8 @@ public class ConfigServiceTests : IDisposable
     [InlineData("bubble.config_reset_title")]
     [InlineData("bubble.config_reset")]
     [InlineData("tooltip.detecting")]
-    public void V107_NewLocalizationKeys_ExistInEveryLanguage(string key)
+    [InlineData("tooltip.read_failed")]
+    public void NewLocalizationKeys_ExistInEveryLanguage(string key)
     {
         foreach (var language in LocalizationService.SupportedLanguages)
         {

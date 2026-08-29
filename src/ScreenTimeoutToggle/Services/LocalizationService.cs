@@ -63,6 +63,9 @@ public static class LocalizationService
             // v1.0.7: shown while the startup powercfg read is still in flight. Better
             // "don't know yet" than a number the system is not running.
             ["tooltip.detecting"] = "正在读取系统当前设置…",
+            // v1.0.8: shown when the startup read already failed. Nothing is in flight;
+            // saying "reading…" forever would be a lie.
+            ["tooltip.read_failed"] = "读取系统设置失败 · 详见日志",
 
             // Common values
             ["common.never"] = "从不",
@@ -145,6 +148,8 @@ public static class LocalizationService
             ["tooltip.unknown"] = "Unknown · AC {0} / DC {1}",
             // v1.0.7: shown while the startup powercfg read is still in flight.
             ["tooltip.detecting"] = "Reading current system settings…",
+            // v1.0.8: shown when the startup read already failed. Nothing is in flight.
+            ["tooltip.read_failed"] = "Could not read system settings · see the log",
 
             // Common values
             ["common.never"] = "Never",

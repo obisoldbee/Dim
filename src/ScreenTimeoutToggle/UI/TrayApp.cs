@@ -45,6 +45,13 @@ public class TrayApp : ApplicationContext
     private long _measuredDcSeconds = -1;
 
     /// <summary>
+    /// True once the startup read has failed outright, meaning no measurement will ever
+    /// arrive unless the app is restarted. Distinguishes "not yet" from "never".
+    /// Guarded by <see cref="_measuredLock"/>.
+    /// </summary>
+    private bool _startupReadFailed;
+
+    /// <summary>
     /// Re-entrancy guards for the two operations that shell out to powercfg.
     /// powercfg can legitimately take tens of seconds (see
     /// <see cref="PowerConfigService.TimeoutMs"/>), so overlapping calls would queue up
@@ -53,6 +60,26 @@ public class TrayApp : ApplicationContext
     /// </summary>
     private int _switching;
     private int _applying;
+
+    /// <summary>
+    /// Set when the user has switched mode themselves (tray click, context menu, hotkey).
+    /// </summary>
+    /// <remarks>
+    /// v1.0.8: the startup powercfg read starts in the constructor, before the tray icon
+    /// exists, and worst case takes ~34 s (2 attempts x (15 s timeout + 2 s kill grace)).
+    /// During that window the tray is already interactive, so the user can switch mode
+    /// while the read — and the values it returns — still describe the system as it was
+    /// <em>before</em> their switch. Applying that stale result would leave the tray
+    /// showing one mode while the system runs another, which is the one thing this app
+    /// must never get wrong.
+    /// <para>
+    /// Written on a thread-pool thread inside <c>Task.Run</c>, immediately after
+    /// <see cref="ModeService.SwitchTo"/> succeeds and before any UI-thread continuation
+    /// is posted, so the flag is always set before the startup result can be applied.
+    /// Read on the UI thread. <c>volatile</c> for cross-thread visibility.
+    /// </para>
+    /// </remarks>
+    private volatile bool _userToggled;
 
     /// <summary>
     /// Creates the tray application.
@@ -80,17 +107,7 @@ public class TrayApp : ApplicationContext
         // Set localization language from config (also set by Program.cs for early messages)
         LocalizationService.CurrentLanguage = _config.Language;
 
-        // v1.0.7 CRITICAL FIX: Control creates its window handle lazily. Until it exists,
-        // InvokeRequired walks the parent chain looking for a marshaling control, finds
-        // none, and returns false — so every BeginInvoke branch below was dead code and
-        // UpdateModeUI ran on whatever thread raised ModeChanged. ModeChanged is raised
-        // inside Task.Run (see ToggleModeCoreAsync), so that was every single switch.
-        // Touching .Handle here forces creation; the constructor runs on the UI thread,
-        // which is exactly the thread the handle must belong to.
-        _syncRoot = new Control();
-        _ = _syncRoot.Handle;
-        Debug.Assert(_syncRoot.IsHandleCreated,
-            "_syncRoot must own a window handle, otherwise InvokeRequired always returns false and UI marshalling silently stops working.");
+        _syncRoot = CreateSyncRoot();
 
         // Load the single unified icon from embedded resources
         _iconApp = LoadIcon("obdim.ico");
@@ -159,6 +176,42 @@ public class TrayApp : ApplicationContext
         _ = MatchStartupModeAsync();
     }
 
+    /// <summary>
+    /// Creates the hidden control used to marshal UI work back to the UI thread.
+    /// </summary>
+    /// <returns>A control that already owns a window handle.</returns>
+    /// <remarks>
+    /// <para>
+    /// v1.0.7 CRITICAL FIX, extracted in v1.0.8 so a test can reach it.
+    /// <see cref="Control"/> creates its window handle lazily. Until it exists,
+    /// <c>InvokeRequired</c> walks the parent chain looking for a marshaling control,
+    /// finds none, and returns <b>false</b> — so every <c>BeginInvoke</c> branch below
+    /// was dead code and <see cref="UpdateModeUI"/> ran on whatever thread raised
+    /// <c>ModeChanged</c>. <c>ModeChanged</c> is raised inside <c>Task.Run</c>
+    /// (see <see cref="ToggleModeCoreAsync"/>), so that was every single mode switch.
+    /// Touching <see cref="Control.Handle"/> here forces creation; the caller runs on the
+    /// UI thread, which is exactly the thread the handle must belong to.
+    /// </para>
+    /// <para>
+    /// Why this is a separate method and not three inlined lines: the v1.0.7 guard test
+    /// only exercised a bare <see cref="Control"/>, so commenting the handle line out left
+    /// the whole suite green. A guard that cannot fail is worse than no guard — it buys
+    /// confidence the code does not deserve. Keeping the invariant in one named place is
+    /// what makes <c>UiMarshallingTests</c> able to assert it.
+    /// </para>
+    /// </remarks>
+    internal static Control CreateSyncRoot()
+    {
+        var control = new Control();
+
+        // Force handle creation. Do NOT remove: InvokeRequired is false without it.
+        _ = control.Handle;
+
+        Debug.Assert(control.IsHandleCreated,
+            "_syncRoot must own a window handle, otherwise InvokeRequired always returns false and UI marshalling silently stops working.");
+        return control;
+    }
+
     private void BuildContextMenu()
     {
         var menu = new ContextMenuStrip();
@@ -180,6 +233,11 @@ public class TrayApp : ApplicationContext
     /// <remarks>
     /// Deliberately does not call <see cref="ModeService.SwitchTo"/>: spec §6.2 says an
     /// unmatched system must be left alone, and this must never write to the power scheme.
+    /// <para>
+    /// v1.0.8: the resolved mode is discarded when the user has switched mode in the
+    /// meantime. The measured values are still recorded — they are what the Unknown
+    /// tooltip reports, and they are a fact about the system regardless of who moved last.
+    /// </para>
     /// </remarks>
     private async Task MatchStartupModeAsync()
     {
@@ -191,11 +249,26 @@ public class TrayApp : ApplicationContext
             SetMeasured(ac, dc);
 
             var matched = _modeSvc.MatchCurrentMode(ac, dc);
+
+            // The read started before the tray icon existed. If the user has since
+            // switched, their switch already changed the power scheme; the mode we
+            // derived from this older read is stale and must not overwrite it. The
+            // discard is logged, not silent.
+            if (_userToggled)
+            {
+                LogService.Info(
+                    $"Startup mode match result ({matched}) discarded: the user already switched to {_modeSvc.CurrentMode}");
+                return;
+            }
+
             _modeSvc.SetCurrentMode(matched);
             RefreshStartupModeUI(matched);
         }
         catch (Exception ex)
         {
+            // v1.0.8: say why there will never be a measurement, so the tooltip stops
+            // claiming a read is in progress when no read is running.
+            SetStartupReadFailed();
             LogService.Warn($"Startup mode match failed: {ex.Message}");
             // leave as Unknown
         }
@@ -233,6 +306,37 @@ public class TrayApp : ApplicationContext
         {
             _measuredAcSeconds = acSeconds;
             _measuredDcSeconds = dcSeconds;
+            _startupReadFailed = false;
+        }
+    }
+
+    /// <summary>
+    /// Records that the startup powercfg read will not produce a measurement at all.
+    /// </summary>
+    /// <remarks>
+    /// v1.0.8: without this the tooltip keeps saying "reading system settings…" forever,
+    /// while in fact no read is running and none will be retried.
+    /// </remarks>
+    private void SetStartupReadFailed()
+    {
+        lock (_measuredLock)
+        {
+            _startupReadFailed = true;
+        }
+    }
+
+    /// <summary>
+    /// Localization key describing why no measured values are available.
+    /// </summary>
+    /// <returns>
+    /// <c>tooltip.read_failed</c> when the startup read failed outright,
+    /// <c>tooltip.detecting</c> while it is still in flight.
+    /// </returns>
+    private string TooltipKeyWhileUnmeasured()
+    {
+        lock (_measuredLock)
+        {
+            return _startupReadFailed ? "tooltip.read_failed" : "tooltip.detecting";
         }
     }
 
@@ -293,7 +397,15 @@ public class TrayApp : ApplicationContext
         try
         {
             // C6: run powercfg on thread pool to avoid blocking UI
-            await Task.Run(() => _modeSvc.SwitchTo(target));
+            await Task.Run(() =>
+            {
+                _modeSvc.SwitchTo(target);
+
+                // v1.0.8: flag the switch from here, not from the continuation. The
+                // startup match's continuation can be posted between SwitchTo returning
+                // and this method's continuation running, and it must see the flag.
+                _userToggled = true;
+            });
             _config = _config with { CurrentMode = target };
             if (!_configSvc.Save(_config))
             {
@@ -600,11 +712,11 @@ public class TrayApp : ApplicationContext
         // is telling the user what the screen is going to do.
         if (mode == AppMode.Unknown)
         {
-            // Between "tray icon appeared" and "startup powercfg read came back" there is
-            // nothing measured yet. Say so rather than quoting a configuration value the
-            // system may not be running.
+            // Two different "no numbers yet" cases, and only one of them is transient:
+            // the startup read may still be in flight, or it may already have failed and
+            // will not be retried. Claiming "reading…" forever would be a lie.
             if (!TryGetMeasured(out var acSeconds, out var dcSeconds))
-                return LocalizationService.Get("tooltip.detecting");
+                return LocalizationService.Get(TooltipKeyWhileUnmeasured());
 
             return FormatTooltip("tooltip.unknown", SecondsToMinutes(acSeconds), SecondsToMinutes(dcSeconds));
         }

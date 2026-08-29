@@ -8,7 +8,18 @@ public class ModeService
     private volatile AppConfig _config;
     private readonly PowerConfigService _power;
 
-    public AppMode CurrentMode { get; private set; }
+    // v1.0.8: volatile for the same reason as _config above — SwitchTo writes it on a
+    // thread-pool thread (TrayApp runs it inside Task.Run) while the UI thread reads it,
+    // and SetCurrentMode writes it from the UI thread. An int write is atomic, but a
+    // reader is still free to cache a non-volatile field in a register and never see it.
+    private volatile AppMode _currentMode = AppMode.Unknown;
+
+    public AppMode CurrentMode
+    {
+        get => _currentMode;
+        private set => _currentMode = value;
+    }
+
     public event EventHandler<AppMode>? ModeChanged;
 
     public ModeService(AppConfig config, PowerConfigService power)

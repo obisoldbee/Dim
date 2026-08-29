@@ -8,7 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>OBDim</AssemblyName>
     <RootNamespace>OBDim</RootNamespace>
-    <Version>1.0.7</Version>
+    <Version>1.0.8</Version>
     <ApplicationIcon>assets\obdim.ico</ApplicationIcon>
   </PropertyGroup>
 
