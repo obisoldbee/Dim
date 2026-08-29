@@ -151,6 +151,16 @@ public class TrayApp : ApplicationContext
             _config = _config with { CurrentMode = target };
             _configSvc.Save(_config);
         }
+        catch (PowerConfigException ex)
+        {
+            // v1.0.5: raw powercfg messages are English and internal. Show a localized,
+            // actionable message derived from the failure category; the raw text stays
+            // in the log for diagnosis.
+            LogService.Error($"Switch failed ({ex.Kind}): {ex.Message}", ex);
+            ShowBubble(LocalizationService.Get("bubble.switch_failed_title"),
+                       LocalizationService.GetPowerConfigError(ex.Kind, ex.Message),
+                       ToolTipIcon.Error);
+        }
         catch (Exception ex)
         {
             // A2: catch all exceptions (not just PowerConfigException)
@@ -210,56 +220,106 @@ public class TrayApp : ApplicationContext
         {
             var newCfg = form.Result;
             var oldCfg = _config;
-            _configSvc.Save(newCfg);
-            _config = newCfg;
+            // Effective config = what actually gets persisted. Starts as the user's choice;
+            // a hotkey that fails to register is rolled back BEFORE saving so the config
+            // file never keeps a value we know is unusable (would fail again on next launch).
+            //
+            // From here on, ONLY effectiveCfg is used. Mixing newCfg and effectiveCfg in the
+            // same block is a maintenance trap: they differ in exactly one field, so every
+            // read has to be re-checked to know whether the user's choice or the rolled-back
+            // value is in play.
+            var effectiveCfg = newCfg;
 
-            // E1: Hotkey change — try new key first, rollback on failure
+            // E1: Hotkey change — try new key first, rollback on failure (before persisting).
+            // The only thing read off newCfg from here on is the key the user ASKED for;
+            // every other field is read off effectiveCfg.
             if (!Equals(newCfg.Hotkey, oldCfg.Hotkey))
             {
-                // Register internally unregisters the old key, then tries the new key
-                if (_hotkeySvc.Register(newCfg.Hotkey))
+                var attemptedHotkey = newCfg.Hotkey;
+
+                // Register internally resolves the key first, then unregisters the old key
+                var registered = _hotkeySvc.Register(attemptedHotkey);
+                effectiveCfg = ConfigResolver.ResolveEffectiveConfig(oldCfg, newCfg, registered);
+
+                if (registered)
                 {
-                    LogService.Info($"Hotkey changed to {newCfg.Hotkey.Modifiers}+{newCfg.Hotkey.Key}");
+                    LogService.Info($"Hotkey changed to {effectiveCfg.Hotkey.Modifiers}+{effectiveCfg.Hotkey.Key}");
                 }
                 else
                 {
-                    // New key failed — try to restore old key
-                    _hotkeySvc.Register(oldCfg.Hotkey);
-                    ShowBubble(LocalizationService.Get("bubble.hotkey_change_failed_title"),
-                               LocalizationService.Get("bubble.hotkey_change_failed", newCfg.Hotkey.Modifiers, newCfg.Hotkey.Key),
-                               ToolTipIcon.Warning);
-                    LogService.Warn($"Hotkey change to {newCfg.Hotkey.Modifiers}+{newCfg.Hotkey.Key} failed, reverted to {oldCfg.Hotkey.Modifiers}+{oldCfg.Hotkey.Key}");
+                    // New key unavailable — try to bring the old key back. This can fail too
+                    // (something else may have grabbed it in the meantime), in which case NO
+                    // hotkey is live. Say so loudly instead of claiming we "reverted".
+                    var rolledBack = _hotkeySvc.Register(oldCfg.Hotkey);
+                    var newKeyText = $"{attemptedHotkey.Modifiers}+{attemptedHotkey.Key}";
+                    var oldKeyText = $"{oldCfg.Hotkey.Modifiers}+{oldCfg.Hotkey.Key}";
+
+                    if (rolledBack)
+                    {
+                        ShowBubble(LocalizationService.Get("bubble.hotkey_change_failed_title"),
+                                   LocalizationService.Get("bubble.hotkey_change_failed",
+                                       attemptedHotkey.Modifiers, attemptedHotkey.Key),
+                                   ToolTipIcon.Warning);
+                        LogService.Warn($"Hotkey change to {newKeyText} failed, reverted to {oldKeyText}");
+                    }
+                    else
+                    {
+                        ShowBubble(LocalizationService.Get("bubble.hotkey_rollback_failed_title"),
+                                   LocalizationService.Get("bubble.hotkey_rollback_failed",
+                                       attemptedHotkey.Modifiers, attemptedHotkey.Key,
+                                       oldCfg.Hotkey.Modifiers, oldCfg.Hotkey.Key),
+                                   ToolTipIcon.Error);
+                        LogService.Error($"Hotkey change to {newKeyText} failed and rollback to {oldKeyText} also failed; no hotkey is registered");
+                    }
                 }
             }
 
-            if (newCfg.AutoStart != oldCfg.AutoStart)
+            _configSvc.Save(effectiveCfg);
+            _config = effectiveCfg;
+
+            if (effectiveCfg.AutoStart != oldCfg.AutoStart)
             {
-                if (newCfg.AutoStart) _autoStartSvc.Enable();
+                if (effectiveCfg.AutoStart) _autoStartSvc.Enable();
                 else _autoStartSvc.Disable();
             }
 
-            _modeSvc.UpdateConfig(newCfg);
+            _modeSvc.UpdateConfig(effectiveCfg);
 
             // C7: Only re-apply if the current mode's timeout values actually changed
             bool currentModeValuesChanged = _modeSvc.CurrentMode switch
             {
-                AppMode.Work => !Equals(newCfg.Work, oldCfg.Work),
-                AppMode.Away => !Equals(newCfg.Away, oldCfg.Away),
+                AppMode.Work => !Equals(effectiveCfg.Work, oldCfg.Work),
+                AppMode.Away => !Equals(effectiveCfg.Away, oldCfg.Away),
                 _ => false // Unknown — no reapply needed
             };
 
             if (currentModeValuesChanged)
             {
-                _modeSvc.ReapplyCurrentMode();
+                try
+                {
+                    _modeSvc.ReapplyCurrentMode();
+                }
+                catch (PowerConfigException ex)
+                {
+                    LogService.Error($"Reapply failed ({ex.Kind}): {ex.Message}", ex);
+                    ShowBubble(LocalizationService.Get("bubble.switch_failed_title"),
+                               LocalizationService.GetPowerConfigError(ex.Kind, ex.Message),
+                               ToolTipIcon.Error);
+                }
+                catch (Exception ex)
+                {
+                    LogService.Error("Reapply failed", ex);
+                    ShowBubble(LocalizationService.Get("bubble.switch_failed_title"), ex.Message, ToolTipIcon.Error);
+                }
             }
 
             // Language change: update runtime language, rebuild menu, notify user
-            if (newCfg.Language != oldCfg.Language)
+            if (effectiveCfg.Language != oldCfg.Language)
             {
-                LocalizationService.CurrentLanguage = newCfg.Language;
+                LocalizationService.CurrentLanguage = effectiveCfg.Language;
                 BuildContextMenu();
                 UpdateSwitchMenuItem();
-                var langName = LocalizationService.GetLanguageDisplayName(newCfg.Language);
+                var langName = LocalizationService.GetLanguageDisplayName(effectiveCfg.Language);
                 ShowBubble(LocalizationService.Get("bubble.language_changed_title"),
                            LocalizationService.Get("bubble.language_changed", langName),
                            ToolTipIcon.Info);

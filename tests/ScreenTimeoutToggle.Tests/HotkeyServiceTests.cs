@@ -295,9 +295,8 @@ public class HotkeyServiceTests
     /// v1.0.3: KeyStringToVk recognizes browser navigation keys.
     /// </summary>
     [Theory]
-    [InlineData("Back", 0xA6u)]
-    [InlineData("BrowserBack", 0xA6u)]       // alias
-    [InlineData("Forward", 0xA7u)]
+    [InlineData("BrowserBack", 0xA6u)]
+    [InlineData("Forward", 0xA7u)]           // not a Keys member — safe alias only
     [InlineData("BrowserForward", 0xA7u)]    // alias
     [InlineData("Refresh", 0xA8u)]
     [InlineData("BrowserRefresh", 0xA8u)]    // alias
@@ -311,6 +310,108 @@ public class HotkeyServiceTests
     public void KeyStringToVk_RecognizesBrowserKeys(string key, uint expectedVk)
     {
         Assert.Equal(expectedVk, HotkeyService.KeyStringToVk(key));
+    }
+
+    /// <summary>
+    /// v1.0.5 REGRESSION: Keys.Back is the BACKSPACE key (VK_BACK = 8), NOT
+    /// Keys.BrowserBack (VK_BROWSER_BACK = 0xA6). SettingsForm captures
+    /// e.KeyCode.ToString() verbatim, so pressing Backspace (most often to clear the old
+    /// value) yields the string "Back". v1.0.3 mapped "Back" → 0xA6, which silently
+    /// registered Ctrl+Alt+BrowserBack: the hotkey looked saved but never fired, with no
+    /// error at all. "Back" must now be rejected so the user gets the invalid-key prompt.
+    /// </summary>
+    [Fact]
+    public void KeyStringToVk_Back_IsRejected_NotMappedToBrowserBack()
+    {
+        // Sanity check on the enum name WinForms actually reports for Backspace.
+        Assert.Equal("Back", Keys.Back.ToString());
+
+        Assert.Equal(0u, HotkeyService.KeyStringToVk(Keys.Back.ToString()));
+        Assert.Equal(0u, HotkeyService.KeyStringToVk("Back"));
+
+        // The browser key is still reachable under its unambiguous name.
+        Assert.Equal("BrowserBack", Keys.BrowserBack.ToString());
+        Assert.Equal(0xA6u, HotkeyService.KeyStringToVk("BrowserBack"));
+        Assert.Equal(0xA6u, HotkeyService.KeyStringToVk(Keys.BrowserBack.ToString()));
+    }
+
+    /// <summary>
+    /// v1.0.5: "Backspace" is accepted as the explicit, unambiguous spelling of VK_BACK
+    /// (useful for hand-edited config files). It must never collide with BrowserBack.
+    /// </summary>
+    [Theory]
+    [InlineData("Backspace", 0x08u)]
+    [InlineData("backspace", 0x08u)]   // case-insensitive
+    [InlineData("BACKSPACE", 0x08u)]
+    public void KeyStringToVk_RecognizesBackspaceAlias(string key, uint expectedVk)
+    {
+        Assert.Equal(expectedVk, HotkeyService.KeyStringToVk(key));
+        Assert.NotEqual(HotkeyService.KeyStringToVk("BrowserBack"), HotkeyService.KeyStringToVk(key));
+    }
+
+    /// <summary>
+    /// v1.0.5: every NamedKeys entry that is also a real <see cref="Keys"/> enum member
+    /// must map to that member's own virtual-key code. This is the generalized guard
+    /// against another "Back"-style collision being added later.
+    /// </summary>
+    [Theory]
+    [InlineData("PrintScreen", 0x2Cu)]
+    [InlineData("Pause", 0x13u)]
+    [InlineData("Scroll", 0x91u)]
+    [InlineData("Capital", 0x14u)]
+    [InlineData("NumLock", 0x90u)]
+    [InlineData("Insert", 0x2Du)]
+    [InlineData("Delete", 0x2Eu)]
+    [InlineData("Home", 0x24u)]
+    [InlineData("End", 0x23u)]
+    [InlineData("Prior", 0x21u)]
+    [InlineData("Next", 0x22u)]
+    [InlineData("Left", 0x25u)]
+    [InlineData("Up", 0x26u)]
+    [InlineData("Right", 0x27u)]
+    [InlineData("Down", 0x28u)]
+    [InlineData("Multiply", 0x6Au)]
+    [InlineData("Add", 0x6Bu)]
+    [InlineData("Separator", 0x6Cu)]
+    [InlineData("Subtract", 0x6Du)]
+    [InlineData("Decimal", 0x6Eu)]
+    [InlineData("Divide", 0x6Fu)]
+    [InlineData("BrowserBack", 0xA6u)]
+    [InlineData("BrowserForward", 0xA7u)]
+    [InlineData("BrowserRefresh", 0xA8u)]
+    [InlineData("BrowserStop", 0xA9u)]
+    [InlineData("BrowserSearch", 0xAAu)]
+    [InlineData("BrowserFavorites", 0xABu)]
+    [InlineData("BrowserHome", 0xACu)]
+    [InlineData("VolumeMute", 0xADu)]
+    [InlineData("VolumeDown", 0xAEu)]
+    [InlineData("VolumeUp", 0xAFu)]
+    [InlineData("MediaNextTrack", 0xB0u)]
+    [InlineData("MediaPreviousTrack", 0xB1u)]
+    [InlineData("MediaStop", 0xB2u)]
+    [InlineData("MediaPlayPause", 0xB3u)]
+    [InlineData("LaunchMail", 0xB4u)]
+    public void KeyStringToVk_NamedKey_MatchesKeysEnumValue(string name, uint expectedVk)
+    {
+        var enumValue = (uint)Enum.Parse<Keys>(name, ignoreCase: false);
+        Assert.Equal(enumValue, expectedVk);
+        Assert.Equal(expectedVk, HotkeyService.KeyStringToVk(name));
+    }
+
+    /// <summary>
+    /// v1.0.5: "Back" must not appear as a NamedKeys alias. Keeping it out is what makes
+    /// Backspace report as invalid instead of silently becoming BrowserBack.
+    /// </summary>
+    [Fact]
+    public void KeyStringToVk_BackspaceKeyName_DoesNotResolveToBrowserBack()
+    {
+        // Whatever the spelling, the Backspace key must never resolve to 0xA6.
+        foreach (var spelling in new[] { "Back", "Backspace", "back", "BACK" })
+        {
+            var vk = HotkeyService.KeyStringToVk(spelling);
+            Assert.True(vk == 0u || vk == 0x08u,
+                $"'{spelling}' resolved to 0x{vk:X2}, which is not Backspace (0x08) or invalid (0x00)");
+        }
     }
 
     /// <summary>
@@ -353,57 +454,93 @@ public class HotkeyServiceTests
     }
 
     /// <summary>
-    /// v1.0.3: KeyStringToVk recognizes the LaunchMail key.
+    /// v1.0.5: an unresolvable key must be rejected outright and must not report a
+    /// registration. WndProc is deliberately NOT asserted here — it answers "was this
+    /// WM_HOTKEY message consumed", not "is a hotkey live"; <see cref="HotkeyService.IsRegistered"/>
+    /// is the state under test.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("Space")]
+    [InlineData("Back")]   // Backspace — the v1.0.3-era silent BrowserBack collision
+    public void Register_InvalidKey_ReturnsFalse_AndStaysUnregistered(string key)
+    {
+        var svc = new HotkeyService(IntPtr.Zero);
+        var cfg = new HotkeyConfig { Modifiers = "Ctrl+Alt", Key = key };
+
+        Assert.False(svc.Register(cfg));
+        Assert.False(svc.IsRegistered);
+    }
+
+    /// <summary>
+    /// v1.0.5 REGRESSION (ordering): v1.0.3 unregistered the old hotkey BEFORE resolving
+    /// the new key, so a bad new key left the app with no hotkey at all and no way to
+    /// roll back atomically. Validation must now happen first, leaving the existing
+    /// registration intact.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("Space")]
+    [InlineData("Back")]
+    public void Register_InvalidKey_KeepsPreviousRegistration(string invalidKey)
+    {
+        var svc = new HotkeyService(IntPtr.Zero);
+        try
+        {
+            // A null hwnd registers a thread-level hotkey, which succeeds on a normal
+            // interactive thread and gives us a real "previously registered" state.
+            var registered = svc.Register(new HotkeyConfig { Modifiers = "Ctrl+Alt+Shift", Key = "F24" });
+            if (!registered)
+            {
+                // This environment cannot register thread hotkeys at all — nothing to assert.
+                return;
+            }
+            Assert.True(svc.IsRegistered);
+
+            Assert.False(svc.Register(new HotkeyConfig { Modifiers = "Ctrl+Alt", Key = invalidKey }));
+
+            // The working hotkey must have survived the failed change.
+            Assert.True(svc.IsRegistered);
+        }
+        finally
+        {
+            svc.Unregister();
+        }
+    }
+
+    /// <summary>
+    /// v1.0.5: replacing one valid hotkey with another must end with exactly one live
+    /// registration (the new key), not zero or two.
+    /// </summary>
+    [Fact]
+    public void Register_ValidKeyReplacement_EndsRegistered()
+    {
+        var svc = new HotkeyService(IntPtr.Zero);
+        try
+        {
+            if (!svc.Register(new HotkeyConfig { Modifiers = "Ctrl+Alt+Shift", Key = "F24" }))
+            {
+                return; // environment cannot register thread hotkeys
+            }
+
+            Assert.True(svc.Register(new HotkeyConfig { Modifiers = "Ctrl+Alt+Shift", Key = "F23" }));
+            Assert.True(svc.IsRegistered);
+        }
+        finally
+        {
+            svc.Unregister();
+        }
+    }
+
+    /// <summary>
+    /// v1.0.3 regression guard, retained. The full enum-name coverage for these keys now
+    /// lives in <see cref="QaKeysEnumMatchTests"/>; only the two targeted Facts remain
+    /// there, so this duplicate Theory is intentionally not repeated in this file.
     /// </summary>
     [Fact]
     public void KeyStringToVk_RecognizesLaunchMail()
     {
         Assert.Equal(0xB4u, HotkeyService.KeyStringToVk("LaunchMail"));
-    }
-
-    /// <summary>
-    /// v1.0.3: Regression guard — verifies that KeyStringToVk accepts the actual
-    /// .NET Keys enum name (via ToString()) for every newly added key. This
-    /// simulates the real SettingsForm capture path (e.KeyCode.ToString() →
-    /// KeyStringToVk) and catches mismatches like "MediaPrevTrack" vs
-    /// "MediaPreviousTrack".
-    /// </summary>
-    [Theory]
-    [InlineData(Keys.NumPad0, 0x60u)]
-    [InlineData(Keys.NumPad1, 0x61u)]
-    [InlineData(Keys.NumPad2, 0x62u)]
-    [InlineData(Keys.NumPad3, 0x63u)]
-    [InlineData(Keys.NumPad4, 0x64u)]
-    [InlineData(Keys.NumPad5, 0x65u)]
-    [InlineData(Keys.NumPad6, 0x66u)]
-    [InlineData(Keys.NumPad7, 0x67u)]
-    [InlineData(Keys.NumPad8, 0x68u)]
-    [InlineData(Keys.NumPad9, 0x69u)]
-    [InlineData(Keys.Multiply, 0x6Au)]
-    [InlineData(Keys.Add, 0x6Bu)]
-    [InlineData(Keys.Separator, 0x6Cu)]
-    [InlineData(Keys.Subtract, 0x6Du)]
-    [InlineData(Keys.Decimal, 0x6Eu)]
-    [InlineData(Keys.Divide, 0x6Fu)]
-    [InlineData(Keys.BrowserBack, 0xA6u)]
-    [InlineData(Keys.BrowserForward, 0xA7u)]
-    [InlineData(Keys.BrowserRefresh, 0xA8u)]
-    [InlineData(Keys.BrowserStop, 0xA9u)]
-    [InlineData(Keys.BrowserSearch, 0xAAu)]
-    [InlineData(Keys.BrowserFavorites, 0xABu)]
-    [InlineData(Keys.BrowserHome, 0xACu)]
-    [InlineData(Keys.VolumeMute, 0xADu)]
-    [InlineData(Keys.VolumeDown, 0xAEu)]
-    [InlineData(Keys.VolumeUp, 0xAFu)]
-    [InlineData(Keys.MediaNextTrack, 0xB0u)]
-    [InlineData(Keys.MediaPreviousTrack, 0xB1u)]
-    [InlineData(Keys.MediaStop, 0xB2u)]
-    [InlineData(Keys.MediaPlayPause, 0xB3u)]
-    [InlineData(Keys.LaunchMail, 0xB4u)]
-    public void KeyStringToVk_AcceptsActualKeysEnumName(Keys key, uint expectedVk)
-    {
-        // Simulate the real SettingsForm capture path: e.KeyCode.ToString() → KeyStringToVk
-        var keyName = key.ToString();
-        Assert.Equal(expectedVk, HotkeyService.KeyStringToVk(keyName));
     }
 }

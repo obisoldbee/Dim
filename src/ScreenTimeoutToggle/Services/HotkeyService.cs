@@ -31,6 +31,13 @@ public class HotkeyService
 
     public event Action? HotkeyPressed;
 
+    /// <summary>
+    /// True while a hotkey is currently registered with the window (or thread, when the
+    /// handle is null). Exposed so callers and tests can distinguish "no hotkey is live"
+    /// from "a WM_HOTKEY message was consumed".
+    /// </summary>
+    public bool IsRegistered => _registered;
+
     public HotkeyService(IntPtr hwnd)
     {
         _hwnd = hwnd;
@@ -42,12 +49,24 @@ public class HotkeyService
     /// Registers a global hotkey. Internally unregisters any previously registered hotkey first.
     /// Returns false if the key combination is invalid or already in use by another application.
     /// </summary>
+    /// <remarks>
+    /// v1.0.5: The key string is validated and resolved to a virtual-key code BEFORE the
+    /// previously registered hotkey is unregistered. Previously the order was
+    /// "unregister → parse", so an invalid new key left the service in a dangling state
+    /// (old key gone, no new key registered) with no way to roll back atomically.
+    /// </remarks>
     public bool Register(HotkeyConfig cfg, int id = HOTKEY_ID)
     {
-        Unregister(id);
-        var mods = ParseModifiers(cfg.Modifiers);
+        // Resolve first — never tear down the working hotkey for a key we cannot register.
         var vk = KeyStringToVk(cfg.Key);
-        if (vk == 0) return false;
+        if (vk == 0)
+        {
+            LogService.Warn($"Invalid hotkey key, keeping existing registration: {cfg.Modifiers}+{cfg.Key}");
+            return false;
+        }
+
+        var mods = ParseModifiers(cfg.Modifiers);
+        Unregister(id);
         _registered = RegisterHotKey(_hwnd, id, mods, vk);
         if (!_registered)
         {
@@ -110,6 +129,10 @@ public class HotkeyService
             ["Capital"] = 0x14,     // VK_CAPITAL (CapsLock)
             ["CapsLock"] = 0x14,    // alias
             ["NumLock"] = 0x90,     // VK_NUMLOCK
+            // v1.0.5: explicit alias for the Backspace key. Keys.Back (8) is what
+            // WinForms reports, but "Backspace" is the unambiguous name used in
+            // hand-edited config files, so accept it too.
+            ["Backspace"] = 0x08,   // VK_BACK
             ["Insert"] = 0x2D,      // VK_INSERT
             ["Delete"] = 0x2E,      // VK_DELETE
             ["Home"] = 0x24,        // VK_HOME
@@ -154,8 +177,16 @@ public class HotkeyService
             // --- v1.0.3: Browser keys (0xA6–0xAC) ---
             // Note: "Home" is NOT remapped here — it stays as VK_HOME (0x24) above.
             //       Use "BrowserHome" for VK_BROWSER_HOME (0xAC).
-            ["Back"] = 0xA6,              // VK_BROWSER_BACK
-            ["BrowserBack"] = 0xA6,       // alias
+            //
+            // v1.0.5 regression fix: a bare "Back" entry used to map to 0xA6 here.
+            // But Keys.Back == 8 is the BACKSPACE key, and SettingsForm captures
+            // e.KeyCode.ToString() verbatim, so pressing Backspace (typically to clear
+            // the old value) produced the string "Back" and was silently registered as
+            // Ctrl+Alt+BrowserBack — the hotkey appeared saved but never fired.
+            // "Back" is intentionally left OUT of this dictionary so that Backspace is
+            // reported as an invalid key (as it was before v1.0.3). Only the explicit
+            // "BrowserBack" name maps to 0xA6.
+            ["BrowserBack"] = 0xA6,       // VK_BROWSER_BACK
             ["Forward"] = 0xA7,           // VK_BROWSER_FORWARD
             ["BrowserForward"] = 0xA7,    // alias
             ["Refresh"] = 0xA8,           // VK_BROWSER_REFRESH

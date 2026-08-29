@@ -250,4 +250,158 @@ public class PowerConfigServiceTests
         var ex = Assert.Throws<PowerConfigException>(() => svc.SetVideoIdle(60, 60));
         Assert.Contains("Step 3/3", ex.Message);
     }
+
+    // ===== v1.0.5: timeout retry + error classification =====
+
+    /// <summary>
+    /// v1.0.5: a single timeout is retried once. The retry must be observable through the
+    /// injected runner, otherwise a real stall would be untestable.
+    /// </summary>
+    [Fact]
+    public void GetCurrentVideoIdle_TimeoutOnce_RetriesAndSucceeds()
+    {
+        var callCount = 0;
+        var svc = new PowerConfigService(_ =>
+        {
+            callCount++;
+            if (callCount == 1)
+                throw new PowerConfigException("powercfg timeout after 15s", PowerConfigErrorKind.Timeout);
+            return new ProcessResult(0, QueryOutput, "");
+        });
+
+        var (ac, dc) = svc.GetCurrentVideoIdle();
+
+        Assert.Equal(2, callCount);
+        Assert.Equal(60L, ac);
+        Assert.Equal(120L, dc);
+    }
+
+    /// <summary>
+    /// v1.0.5: after the retry budget is exhausted the timeout surfaces to the caller,
+    /// tagged with PowerConfigErrorKind.Timeout so the UI can localize it.
+    /// </summary>
+    [Fact]
+    public void GetCurrentVideoIdle_AlwaysTimesOut_ThrowsTimeoutKind_AfterMaxAttempts()
+    {
+        var callCount = 0;
+        var svc = new PowerConfigService(_ =>
+        {
+            callCount++;
+            throw new PowerConfigException("powercfg timeout after 15s", PowerConfigErrorKind.Timeout);
+        });
+
+        var ex = Assert.Throws<PowerConfigException>(() => svc.GetCurrentVideoIdle());
+
+        Assert.Equal(PowerConfigErrorKind.Timeout, ex.Kind);
+        Assert.Equal(PowerConfigService.MaxAttempts, callCount);
+    }
+
+    /// <summary>
+    /// v1.0.5: retry is per invocation, so a timeout on step 1 of SetVideoIdle retries only
+    /// that step — the two later steps still run exactly once.
+    /// </summary>
+    [Fact]
+    public void SetVideoIdle_TimeoutOnFirstStep_RetriesOnlyThatStep()
+    {
+        var callCount = 0;
+        var svc = new PowerConfigService(_ =>
+        {
+            callCount++;
+            if (callCount == 1)
+                throw new PowerConfigException("powercfg timeout after 15s", PowerConfigErrorKind.Timeout);
+            return new ProcessResult(0, "", "");
+        });
+
+        svc.SetVideoIdle(acSeconds: 60, dcSeconds: 120);
+
+        // 2 attempts for step 1 + 1 each for steps 2 and 3
+        Assert.Equal(4, callCount);
+    }
+
+    /// <summary>
+    /// v1.0.5: a timeout that keeps failing must not silently succeed — the exception
+    /// propagates out of SetVideoIdle and the run stops at the failing step.
+    /// </summary>
+    [Fact]
+    public void SetVideoIdle_AlwaysTimesOut_ThrowsTimeoutKind()
+    {
+        var callCount = 0;
+        var svc = new PowerConfigService(_ =>
+        {
+            callCount++;
+            throw new PowerConfigException("powercfg timeout after 15s", PowerConfigErrorKind.Timeout);
+        });
+
+        var ex = Assert.Throws<PowerConfigException>(() => svc.SetVideoIdle(60, 60));
+
+        Assert.Equal(PowerConfigErrorKind.Timeout, ex.Kind);
+        // Step 1 consumes both attempts and aborts before step 2.
+        Assert.Equal(PowerConfigService.MaxAttempts, callCount);
+    }
+
+    /// <summary>
+    /// v1.0.5: non-timeout failures must NOT be retried — retrying a "rejected by policy"
+    /// result would just double the wait with no chance of success.
+    /// </summary>
+    [Fact]
+    public void GetCurrentVideoIdle_NonZeroExit_IsNotRetried()
+    {
+        var callCount = 0;
+        var svc = new PowerConfigService(_ =>
+        {
+            callCount++;
+            return new ProcessResult(1, "", "Access denied");
+        });
+
+        Assert.Throws<PowerConfigException>(() => svc.GetCurrentVideoIdle());
+        Assert.Equal(1, callCount);
+    }
+
+    /// <summary>
+    /// v1.0.5: exit-code and parse failures carry their own error kinds so the UI can show
+    /// a specific hint instead of a generic "failed".
+    /// </summary>
+    [Fact]
+    public void ErrorKinds_AreClassifiedCorrectly()
+    {
+        var nonZeroExit = Assert.Throws<PowerConfigException>(
+            () => new PowerConfigService(_ => new ProcessResult(1, "", "denied")).GetCurrentVideoIdle());
+        Assert.Equal(PowerConfigErrorKind.NonZeroExit, nonZeroExit.Kind);
+
+        var parseFailed = Assert.Throws<PowerConfigException>(
+            () => new PowerConfigService(_ => new ProcessResult(0, "garbage", "")).GetCurrentVideoIdle());
+        Assert.Equal(PowerConfigErrorKind.ParseFailed, parseFailed.Kind);
+    }
+
+    /// <summary>
+    /// v1.0.5: the timeout budget was raised from 5s to 15s to ride out transient system
+    /// stalls instead of failing the user's toggle.
+    /// </summary>
+    [Fact]
+    public void TimeoutBudget_IsFifteenSeconds()
+    {
+        Assert.Equal(15000, PowerConfigService.TimeoutMs);
+    }
+
+    /// <summary>
+    /// v1.0.5: the exact powercfg command line must reach the runner so it can be logged
+    /// and handed back for diagnosis.
+    /// </summary>
+    [Fact]
+    public void GetCurrentVideoIdle_PassesFullArgumentListToRunner()
+    {
+        List<string>? captured = null;
+        var svc = new PowerConfigService(psi =>
+        {
+            captured = new List<string>(psi.ArgumentList);
+            return new ProcessResult(0, QueryOutput, "");
+        });
+
+        svc.GetCurrentVideoIdle();
+
+        Assert.NotNull(captured);
+        Assert.Equal(new[] { "/query", "SCHEME_CURRENT",
+                             "7516b95f-f776-4464-8c53-06167f40cc99",
+                             "3c0bc021-c8a8-4e07-a973-6b14cbcb2b7e" }, captured);
+    }
 }

@@ -6,10 +6,45 @@ namespace OBDim.Services;
 
 public record ProcessResult(int ExitCode, string Stdout, string Stderr);
 
+/// <summary>
+/// Classifies a powercfg failure so callers can show a localized, actionable message
+/// instead of bubbling a raw English exception message up to the user.
+/// </summary>
+public enum PowerConfigErrorKind
+{
+    /// <summary>Unclassified failure — callers should fall back to the raw exception message.</summary>
+    Unknown = 0,
+
+    /// <summary>powercfg.exe did not exit within <see cref="PowerConfigService.TimeoutMs"/>.</summary>
+    Timeout,
+
+    /// <summary>The process could not be started at all (blocked, missing, access denied).</summary>
+    InvocationFailed,
+
+    /// <summary>powercfg.exe ran but returned a non-zero exit code.</summary>
+    NonZeroExit,
+
+    /// <summary>powercfg.exe ran successfully but its output could not be parsed.</summary>
+    ParseFailed
+}
+
 public class PowerConfigException : Exception
 {
-    public PowerConfigException(string message) : base(message) { }
-    public PowerConfigException(string message, Exception inner) : base(message, inner) { }
+    /// <summary>Classification of the failure, used to pick a localized user-facing message.</summary>
+    public PowerConfigErrorKind Kind { get; }
+
+    public PowerConfigException(string message, PowerConfigErrorKind kind = PowerConfigErrorKind.Unknown)
+        : base(message)
+    {
+        Kind = kind;
+    }
+
+    public PowerConfigException(string message, Exception inner,
+                                PowerConfigErrorKind kind = PowerConfigErrorKind.Unknown)
+        : base(message, inner)
+    {
+        Kind = kind;
+    }
 }
 
 /// <summary>
@@ -21,8 +56,23 @@ public class PowerConfigService
     /// <summary>powercfg alias for the currently active power scheme.</summary>
     private const string SchemeCurrent = "SCHEME_CURRENT";
 
-    /// <summary>Timeout for powercfg process in milliseconds.</summary>
-    private const int TimeoutMs = 5000;
+    /// <summary>
+    /// Timeout for a single powercfg invocation, in milliseconds.
+    /// v1.0.5: raised from 5s to 15s. powercfg normally finishes in a few hundred
+    /// milliseconds, so a timeout at 5s almost always means the system stalled
+    /// (EDR/AV interception, group-policy locked scheme, power saving, heavy load)
+    /// — too aggressive a threshold turned those transient stalls into hard failures.
+    /// </summary>
+    public const int TimeoutMs = 15000;
+
+    /// <summary>
+    /// Grace period after <see cref="System.Diagnostics.Process.Kill()"/> so the async
+    /// stdout/stderr readers can drain and the OS can release the process handle.
+    /// </summary>
+    private const int KillGraceMs = 2000;
+
+    /// <summary>Total attempts per powercfg invocation: 1 initial try + 1 retry on timeout.</summary>
+    public const int MaxAttempts = 2;
 
     public static readonly Guid SubVideoGuid = Guid.Parse("7516b95f-f776-4464-8c53-06167f40cc99");
     public static readonly Guid VideoIdleGuid = Guid.Parse("3c0bc021-c8a8-4e07-a973-6b14cbcb2b7e");
@@ -52,9 +102,10 @@ public class PowerConfigService
     {
         var psi = NewPsi("/query", SchemeCurrent,
             SubVideoGuid.ToString(), VideoIdleGuid.ToString());
-        var result = _runner(psi);
+        var result = RunWithRetry(psi);
         if (result.ExitCode != 0)
-            throw new PowerConfigException($"query failed: {result.Stderr}");
+            throw new PowerConfigException($"query failed: {result.Stderr}",
+                PowerConfigErrorKind.NonZeroExit);
 
         return ParseVideoIdle(result.Stdout);
     }
@@ -115,7 +166,8 @@ public class PowerConfigService
         }
 
         if (hexValues.Count < 2)
-            throw new PowerConfigException($"Cannot parse AC/DC from: {output}");
+            throw new PowerConfigException($"Cannot parse AC/DC from: {output}",
+                PowerConfigErrorKind.ParseFailed);
 
         // AC is second-to-last, DC is last (matching powercfg output structure)
         return (hexValues[^2], hexValues[^1]);
@@ -127,11 +179,42 @@ public class PowerConfigService
     /// </summary>
     private void RunStrict(ProcessStartInfo psi, string stepName, int stepNumber)
     {
-        var result = _runner(psi);
+        var result = RunWithRetry(psi);
         if (result.ExitCode != 0)
             throw new PowerConfigException(
-                $"Step {stepNumber}/3 ({stepName}) failed (exit {result.ExitCode}): {result.Stderr}");
+                $"Step {stepNumber}/3 ({stepName}) failed (exit {result.ExitCode}): {result.Stderr}",
+                PowerConfigErrorKind.NonZeroExit);
     }
+
+    /// <summary>
+    /// Invokes the process runner, retrying once when the run times out.
+    /// The retry lives at this level (above the injected runner) so it is exercised by
+    /// tests that supply their own runner: a test runner throwing
+    /// <see cref="PowerConfigException"/> with <see cref="PowerConfigErrorKind.Timeout"/>
+    /// will be called a second time, exactly like the real runner would be.
+    /// </summary>
+    private ProcessResult RunWithRetry(ProcessStartInfo psi)
+    {
+        for (int attempt = 1; ; attempt++)
+        {
+            try
+            {
+                LogService.Info($"powercfg attempt {attempt}/{MaxAttempts}: {Describe(psi)}");
+                return _runner(psi);
+            }
+            catch (PowerConfigException ex) when (ex.Kind == PowerConfigErrorKind.Timeout && attempt < MaxAttempts)
+            {
+                LogService.Warn($"powercfg timed out (attempt {attempt}/{MaxAttempts}), retrying: {Describe(psi)}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Renders the exact command line so it can be recorded in the log file.
+    /// Users can hand this log back for diagnosis.
+    /// </summary>
+    private static string Describe(ProcessStartInfo psi)
+        => $"{psi.FileName} {string.Join(' ', psi.ArgumentList)}";
 
     /// <summary>
     /// Creates a ProcessStartInfo for powercfg.exe with the given arguments.
@@ -162,7 +245,8 @@ public class PowerConfigService
         try
         {
             p = Process.Start(psi)
-                ?? throw new PowerConfigException("powercfg invocation failed: Process.Start returned null");
+                ?? throw new PowerConfigException("powercfg invocation failed: Process.Start returned null",
+                                                  PowerConfigErrorKind.InvocationFailed);
 
             var stdoutBuilder = new StringBuilder();
             var stderrBuilder = new StringBuilder();
@@ -176,7 +260,11 @@ public class PowerConfigService
             if (!p.WaitForExit(TimeoutMs))
             {
                 try { p.Kill(); } catch { /* best effort */ }
-                throw new PowerConfigException($"powercfg timeout after {TimeoutMs / 1000}s");
+                // Give the killed process a short grace period so the async readers can
+                // drain and the OS can release the handle before the Process is disposed.
+                try { p.WaitForExit(KillGraceMs); } catch { /* best effort */ }
+                throw new PowerConfigException($"powercfg timeout after {TimeoutMs / 1000}s",
+                                               PowerConfigErrorKind.Timeout);
             }
 
             // Wait for async I/O to complete (process already exited, so this returns quickly)
@@ -191,7 +279,8 @@ public class PowerConfigService
         catch (Exception ex)
         {
             // Normalize all other exceptions (Win32Exception, etc.) into PowerConfigException
-            throw new PowerConfigException($"powercfg invocation failed: {ex.Message}", ex);
+            throw new PowerConfigException($"powercfg invocation failed: {ex.Message}", ex,
+                                           PowerConfigErrorKind.InvocationFailed);
         }
         finally
         {

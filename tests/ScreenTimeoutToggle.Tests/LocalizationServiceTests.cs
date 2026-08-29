@@ -188,6 +188,128 @@ public class LocalizationServiceTests
     }
 
     /// <summary>
+    /// v1.0.5: every translation key must exist in every supported language. A missing key
+    /// degrades silently — Chinese users would see either the raw key or English text —
+    /// so the gap is invisible until someone actually hits that code path.
+    /// </summary>
+    [Fact]
+    public void EveryKey_IsDefinedInEveryLanguage()
+    {
+        var languages = LocalizationService.SupportedLanguages;
+        Assert.Contains("zh-CN", languages);
+        Assert.Contains("en-US", languages);
+
+        foreach (var key in LocalizationService.AllKeys)
+        {
+            foreach (var language in languages)
+            {
+                Assert.True(LocalizationService.HasKey(key, language),
+                    $"Translation key '{key}' is missing for language '{language}'.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// v1.0.5: powercfg failures are shown to the user through PowerConfigErrorKind.
+    /// Every kind needs a real translation in BOTH languages — a missing key would leak
+    /// the raw key name (or an English sentence) into a Chinese user's error bubble.
+    /// </summary>
+    [Theory]
+    [InlineData("zh-CN")]
+    [InlineData("en-US")]
+    public void GetPowerConfigError_AllKinds_AreTranslated(string language)
+    {
+        var saved = LocalizationService.CurrentLanguage;
+        try
+        {
+            LocalizationService.CurrentLanguage = language;
+
+            foreach (var kind in new[]
+                     {
+                         PowerConfigErrorKind.Timeout,
+                         PowerConfigErrorKind.InvocationFailed,
+                         PowerConfigErrorKind.NonZeroExit,
+                         PowerConfigErrorKind.ParseFailed
+                     })
+            {
+                var message = LocalizationService.GetPowerConfigError(kind, "RAW_FALLBACK");
+
+                Assert.NotEqual("RAW_FALLBACK", message);
+                Assert.DoesNotContain("error.powercfg", message);
+                Assert.False(string.IsNullOrWhiteSpace(message));
+            }
+        }
+        finally
+        {
+            LocalizationService.CurrentLanguage = saved;
+        }
+    }
+
+    /// <summary>
+    /// v1.0.5: the timeout message must be actionable — it should tell the user to check
+    /// security software, which is the most common real cause of a powercfg stall.
+    /// </summary>
+    [Fact]
+    public void GetPowerConfigError_Timeout_IsActionable()
+    {
+        var saved = LocalizationService.CurrentLanguage;
+        try
+        {
+            LocalizationService.CurrentLanguage = "zh-CN";
+            var zh = LocalizationService.GetPowerConfigError(PowerConfigErrorKind.Timeout, "raw");
+            Assert.Contains("powercfg", zh);
+            Assert.Contains("安全软件", zh);
+
+            LocalizationService.CurrentLanguage = "en-US";
+            var en = LocalizationService.GetPowerConfigError(PowerConfigErrorKind.Timeout, "raw");
+            Assert.Contains("powercfg", en);
+            Assert.Contains("security software", en);
+        }
+        finally
+        {
+            LocalizationService.CurrentLanguage = saved;
+        }
+    }
+
+    /// <summary>
+    /// v1.0.5: an unclassified failure falls back to the raw message rather than showing
+    /// the user an empty bubble.
+    /// </summary>
+    [Fact]
+    public void GetPowerConfigError_UnknownKind_ReturnsFallbackMessage()
+    {
+        Assert.Equal("raw message",
+            LocalizationService.GetPowerConfigError(PowerConfigErrorKind.Unknown, "raw message"));
+    }
+
+    /// <summary>
+    /// v1.0.5: the hotkey rollback-failure bubble needs both languages too.
+    /// </summary>
+    [Theory]
+    [InlineData("zh-CN")]
+    [InlineData("en-US")]
+    public void HotkeyRollbackFailed_IsTranslated(string language)
+    {
+        var saved = LocalizationService.CurrentLanguage;
+        try
+        {
+            LocalizationService.CurrentLanguage = language;
+
+            var title = LocalizationService.Get("bubble.hotkey_rollback_failed_title");
+            var text = LocalizationService.Get("bubble.hotkey_rollback_failed", "Ctrl+Alt", "F5", "Ctrl+Alt", "S");
+
+            Assert.DoesNotContain("bubble.hotkey_rollback", title);
+            Assert.DoesNotContain("bubble.hotkey_rollback", text);
+            Assert.Contains("F5", text); // new key
+            Assert.Contains("S", text);  // old key
+        }
+        finally
+        {
+            LocalizationService.CurrentLanguage = saved;
+        }
+    }
+
+    /// <summary>
     /// QA: Unsupported language code (e.g., "fr-FR") should fall back to the default
     /// language (zh-CN), NOT return the raw key string. Without this fallback, manually
     /// editing config.json with an unsupported language would cause ALL UI text to show

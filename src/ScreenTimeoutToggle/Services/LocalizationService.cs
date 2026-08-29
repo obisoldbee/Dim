@@ -32,6 +32,8 @@ public static class LocalizationService
             ["bubble.hotkey_unavailable"] = "热键 {0}+{1} 无法注册。",
             ["bubble.hotkey_change_failed_title"] = "热键修改失败",
             ["bubble.hotkey_change_failed"] = "热键 {0}+{1} 已被占用，已恢复之前的设置。",
+            ["bubble.hotkey_rollback_failed_title"] = "热键恢复失败",
+            ["bubble.hotkey_rollback_failed"] = "新热键 {0}+{1} 不可用，且旧热键 {2}+{3} 也无法重新注册。请在设置中重新选择热键，或重启应用。",
             ["bubble.language_changed_title"] = "语言已切换",
             ["bubble.language_changed"] = "语言已切换为{0}，部分界面将在重启后完全生效。",
 
@@ -74,6 +76,13 @@ public static class LocalizationService
             ["error.already_running"] = "OB Dim 已经在运行。",
             ["error.app_title"] = "OB Dim",
 
+            // powercfg failure messages (v1.0.5) — keyed by PowerConfigErrorKind.
+            // Each message must stay actionable: tell the user what to check next.
+            ["error.powercfg_timeout"] = "系统电源设置响应超时。请检查安全软件是否拦截了 powercfg.exe，或系统是否处于高负载 / 省电模式，然后重试。",
+            ["error.powercfg_invocation_failed"] = "无法调用系统电源设置工具 powercfg.exe。请检查安全软件是否拦截了该程序。",
+            ["error.powercfg_rejected"] = "系统拒绝修改电源设置，通常是权限不足或组策略锁定了电源方案。请重试，或联系系统管理员。",
+            ["error.powercfg_parse_failed"] = "无法解析系统电源设置的返回值。请重启应用后重试；若持续出现，请回传日志排查。",
+
             // Language display names (always shown in their own script)
             ["language.zh_cn"] = "中文",
             ["language.en_us"] = "English",
@@ -95,6 +104,8 @@ public static class LocalizationService
             ["bubble.hotkey_unavailable"] = "Hotkey {0}+{1} could not be registered.",
             ["bubble.hotkey_change_failed_title"] = "Hotkey Change Failed",
             ["bubble.hotkey_change_failed"] = "Hotkey {0}+{1} is in use. Reverted to previous.",
+            ["bubble.hotkey_rollback_failed_title"] = "Hotkey Rollback Failed",
+            ["bubble.hotkey_rollback_failed"] = "New hotkey {0}+{1} is unavailable, and the previous hotkey {2}+{3} could not be re-registered. Please choose a different hotkey in Settings or restart the app.",
             ["bubble.language_changed_title"] = "Language Changed",
             ["bubble.language_changed"] = "Language changed to {0}. Some UI will fully apply after restart.",
 
@@ -137,6 +148,13 @@ public static class LocalizationService
             ["error.already_running"] = "OB Dim is already running.",
             ["error.app_title"] = "OB Dim",
 
+            // powercfg failure messages (v1.0.5) — keyed by PowerConfigErrorKind.
+            // Each message must stay actionable: tell the user what to check next.
+            ["error.powercfg_timeout"] = "The system power settings timed out. Check whether security software is blocking powercfg.exe, or whether the system is under heavy load / in power saving mode, then try again.",
+            ["error.powercfg_invocation_failed"] = "Could not start the system power tool powercfg.exe. Check whether security software is blocking it.",
+            ["error.powercfg_rejected"] = "The system rejected the power setting change — usually insufficient permissions or a group policy that locks the power plan. Try again, or contact your system administrator.",
+            ["error.powercfg_parse_failed"] = "Could not read the system power settings output. Restart the app and try again; if it keeps happening, send us the log for diagnosis.",
+
             // Language display names (always shown in their own script)
             ["language.zh_cn"] = "中文",
             ["language.en_us"] = "English",
@@ -178,6 +196,49 @@ public static class LocalizationService
     public static string Get(string key, params object[] args)
     {
         return string.Format(Get(key), args);
+    }
+
+    /// <summary>Language codes this build ships translations for.</summary>
+    public static IReadOnlyCollection<string> SupportedLanguages => Translations.Keys.ToList();
+
+    /// <summary>
+    /// Every translation key defined in the reference language (zh-CN).
+    /// Used to verify no language is missing a key.
+    /// </summary>
+    public static IReadOnlyCollection<string> AllKeys => Translations["zh-CN"].Keys.ToList();
+
+    /// <summary>
+    /// Returns true when the given language defines <paramref name="key"/>.
+    /// Lets a test prove that every key exists in every supported language — a missing
+    /// key silently degrades to the raw key name (or English) in the UI.
+    /// </summary>
+    /// <param name="key">The translation key.</param>
+    /// <param name="languageCode">Language code, e.g. "zh-CN".</param>
+    /// <returns>True if the language has an entry for the key.</returns>
+    public static bool HasKey(string key, string languageCode) =>
+        Translations.TryGetValue(languageCode, out var lang) && lang.ContainsKey(key);
+
+    /// <summary>
+    /// Returns a localized, user-facing description for a powercfg failure category.
+    /// Raw exception messages are English and full of internal detail, so the UI maps
+    /// <see cref="PowerConfigErrorKind"/> to an actionable localized sentence instead.
+    /// </summary>
+    /// <param name="kind">The failure category carried by the exception.</param>
+    /// <param name="fallbackMessage">
+    /// Used when the category is <see cref="PowerConfigErrorKind.Unknown"/> — typically the
+    /// exception message, which is fine for the log but shown as a last resort in the UI.
+    /// </param>
+    /// <returns>A localized message, or <paramref name="fallbackMessage"/> for unknown kinds.</returns>
+    public static string GetPowerConfigError(PowerConfigErrorKind kind, string fallbackMessage)
+    {
+        return kind switch
+        {
+            PowerConfigErrorKind.Timeout => Get("error.powercfg_timeout"),
+            PowerConfigErrorKind.InvocationFailed => Get("error.powercfg_invocation_failed"),
+            PowerConfigErrorKind.NonZeroExit => Get("error.powercfg_rejected"),
+            PowerConfigErrorKind.ParseFailed => Get("error.powercfg_parse_failed"),
+            _ => fallbackMessage
+        };
     }
 
     /// <summary>
