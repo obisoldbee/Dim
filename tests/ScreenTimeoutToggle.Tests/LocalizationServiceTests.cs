@@ -283,6 +283,45 @@ public class LocalizationServiceTests
     }
 
     /// <summary>
+    /// v1.0.6: "key is invalid" and "key is already taken" are now different messages.
+    /// They must be translated in both languages AND must not collapse back into the
+    /// same wording, otherwise the split is cosmetic.
+    /// </summary>
+    [Theory]
+    [InlineData("zh-CN")]
+    [InlineData("en-US")]
+    public void HotkeyChangeFailure_InvalidAndInUse_AreDistinctAndTranslated(string language)
+    {
+        var saved = LocalizationService.CurrentLanguage;
+        try
+        {
+            LocalizationService.CurrentLanguage = language;
+
+            var invalidTitle = LocalizationService.Get("bubble.hotkey_change_invalid_title");
+            var invalidText = LocalizationService.Get("bubble.hotkey_change_invalid", "Ctrl+Alt", "D1");
+            var inUseTitle = LocalizationService.Get("bubble.hotkey_change_failed_title");
+            var inUseText = LocalizationService.Get("bubble.hotkey_change_failed", "Ctrl+Alt", "F5");
+
+            foreach (var s in new[] { invalidTitle, invalidText, inUseTitle, inUseText })
+            {
+                Assert.DoesNotContain("bubble.hotkey", s);
+                Assert.False(string.IsNullOrWhiteSpace(s));
+            }
+
+            Assert.NotEqual(invalidTitle, inUseTitle);
+            Assert.NotEqual(invalidText, inUseText);
+
+            // The message must name the key the user tried, so it is actionable.
+            Assert.Contains("D1", invalidText);
+            Assert.Contains("F5", inUseText);
+        }
+        finally
+        {
+            LocalizationService.CurrentLanguage = saved;
+        }
+    }
+
+    /// <summary>
     /// v1.0.5: the hotkey rollback-failure bubble needs both languages too.
     /// </summary>
     [Theory]

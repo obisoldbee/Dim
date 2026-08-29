@@ -108,14 +108,21 @@ public class HotkeyServiceTests
     }
 
     /// <summary>
-    /// New test: KeyStringToVk returns 0 for invalid keys (e.g., "Space", "Tab", empty, null).
+    /// KeyStringToVk returns 0 for keys that cannot be used as a hotkey.
+    /// v1.0.6: "Space"/"Tab"/"Enter" used to be listed here as invalid — that was the
+    /// defect that made digit, space, enter, escape and symbol keys unsettable. They are
+    /// now valid (see <see cref="KeyStringToVk_RecognizesMainKeyboardAndEditingKeys"/>);
+    /// only junk and the deliberately excluded keys remain rejected.
     /// </summary>
     [Theory]
-    [InlineData("Space")]
-    [InlineData("Tab")]
-    [InlineData("Enter")]
     [InlineData("")]
     [InlineData("  ")]
+    [InlineData("NotAKey")]
+    [InlineData("Bogus")]
+    [InlineData("Back")]     // v1.0.5: rejected on purpose — use "Backspace"
+    [InlineData("ShiftKey")] // modifier, not a hotkey key
+    [InlineData("LButton")]  // mouse button
+    [InlineData("KeyCode")]  // mask constant, not a virtual key
     public void KeyStringToVk_ReturnsZero_ForInvalidKeys(string key)
     {
         Assert.Equal(0u, HotkeyService.KeyStringToVk(key));
@@ -350,52 +357,107 @@ public class HotkeyServiceTests
     }
 
     /// <summary>
-    /// v1.0.5: every NamedKeys entry that is also a real <see cref="Keys"/> enum member
-    /// must map to that member's own virtual-key code. This is the generalized guard
-    /// against another "Back"-style collision being added later.
+    /// v1.0.6: every NamedKeys entry that is also a real <see cref="Keys"/> enum member
+    /// must map to that member's own virtual-key code.
+    /// </summary>
+    /// <remarks>
+    /// v1.0.5 shipped this as 36 hand-written <c>InlineData</c> rows against a 58-entry
+    /// dictionary — CapsLock, NumPad0-9, PageDown, PageUp and Snapshot were silently
+    /// unguarded (and the user's own hotkey, NumPad0, was in that gap). Data now comes
+    /// from reflecting over the dictionary itself, so adding an entry automatically adds
+    /// its guard.
+    /// </remarks>
+    /// <param name="name">Dictionary key.</param>
+    /// <param name="dictVk">Virtual-key code the dictionary maps the name to.</param>
+    /// <param name="enumVk">Virtual-key code of the same-named <see cref="Keys"/> member.</param>
+    [Theory]
+    [MemberData(nameof(NamedKeysThatAreKeysEnumMembers))]
+    public void NamedKeys_MatchesKeysEnumValue(string name, uint dictVk, uint enumVk)
+    {
+        Assert.Equal(enumVk, dictVk);
+        Assert.Equal(dictVk, HotkeyService.KeyStringToVk(name));
+    }
+
+    /// <summary>
+    /// Generates one case per NamedKeys entry whose name is also a <see cref="Keys"/>
+    /// enum member (pure aliases such as "Forward" or "CapsLock"-style spellings that are
+    /// not enum members are skipped — there is nothing to collide with).
+    /// </summary>
+    /// <returns>Name, dictionary virtual-key code, enum virtual-key code.</returns>
+    public static TheoryData<string, uint, uint> NamedKeysThatAreKeysEnumMembers()
+    {
+        var data = new TheoryData<string, uint, uint>();
+        foreach (var (name, vk) in HotkeyService.NamedKeys)
+        {
+            if (Enum.TryParse<Keys>(name, ignoreCase: false, out var enumValue))
+                data.Add(name, vk, (uint)(int)enumValue);
+        }
+        return data;
+    }
+
+    /// <summary>
+    /// Guards the guard: a reflection bug or an emptied dictionary must not turn the
+    /// collision Theory above into zero silently-passing cases.
+    /// </summary>
+    [Fact]
+    public void NamedKeysCollisionGuard_CoversEveryEnumMemberEntry()
+    {
+        var covered = NamedKeysThatAreKeysEnumMembers().Count();
+        var expected = HotkeyService.NamedKeys
+            .Count(kv => Enum.TryParse<Keys>(kv.Key, ignoreCase: false, out _));
+
+        Assert.True(expected > 0, "NamedKeys should contain at least one Keys enum member");
+        Assert.Equal(expected, covered);
+        // Sanity anchor: the dictionary grows as key coverage expands.
+        Assert.True(HotkeyService.NamedKeys.Count >= 100,
+            $"Expected the expanded key map, found {HotkeyService.NamedKeys.Count} entries");
+    }
+
+    /// <summary>
+    /// v1.0.6: the whole point of the key-map expansion — digits, space, enter, escape,
+    /// tab and symbol keys must now resolve from the exact string SettingsForm produces.
     /// </summary>
     [Theory]
-    [InlineData("PrintScreen", 0x2Cu)]
-    [InlineData("Pause", 0x13u)]
-    [InlineData("Scroll", 0x91u)]
-    [InlineData("Capital", 0x14u)]
-    [InlineData("NumLock", 0x90u)]
-    [InlineData("Insert", 0x2Du)]
-    [InlineData("Delete", 0x2Eu)]
-    [InlineData("Home", 0x24u)]
-    [InlineData("End", 0x23u)]
-    [InlineData("Prior", 0x21u)]
-    [InlineData("Next", 0x22u)]
-    [InlineData("Left", 0x25u)]
-    [InlineData("Up", 0x26u)]
-    [InlineData("Right", 0x27u)]
-    [InlineData("Down", 0x28u)]
-    [InlineData("Multiply", 0x6Au)]
-    [InlineData("Add", 0x6Bu)]
-    [InlineData("Separator", 0x6Cu)]
-    [InlineData("Subtract", 0x6Du)]
-    [InlineData("Decimal", 0x6Eu)]
-    [InlineData("Divide", 0x6Fu)]
-    [InlineData("BrowserBack", 0xA6u)]
-    [InlineData("BrowserForward", 0xA7u)]
-    [InlineData("BrowserRefresh", 0xA8u)]
-    [InlineData("BrowserStop", 0xA9u)]
-    [InlineData("BrowserSearch", 0xAAu)]
-    [InlineData("BrowserFavorites", 0xABu)]
-    [InlineData("BrowserHome", 0xACu)]
-    [InlineData("VolumeMute", 0xADu)]
-    [InlineData("VolumeDown", 0xAEu)]
-    [InlineData("VolumeUp", 0xAFu)]
-    [InlineData("MediaNextTrack", 0xB0u)]
-    [InlineData("MediaPreviousTrack", 0xB1u)]
-    [InlineData("MediaStop", 0xB2u)]
-    [InlineData("MediaPlayPause", 0xB3u)]
-    [InlineData("LaunchMail", 0xB4u)]
-    public void KeyStringToVk_NamedKey_MatchesKeysEnumValue(string name, uint expectedVk)
+    [InlineData(Keys.D0, 0x30u)]
+    [InlineData(Keys.D1, 0x31u)]
+    [InlineData(Keys.D5, 0x35u)]
+    [InlineData(Keys.D9, 0x39u)]
+    [InlineData(Keys.Space, 0x20u)]
+    [InlineData(Keys.Enter, 0x0Du)]
+    [InlineData(Keys.Tab, 0x09u)]
+    [InlineData(Keys.Escape, 0x1Bu)]
+    [InlineData(Keys.OemSemicolon, 0xBAu)]
+    [InlineData(Keys.Oemplus, 0xBBu)]
+    [InlineData(Keys.Oemcomma, 0xBCu)]
+    [InlineData(Keys.OemMinus, 0xBDu)]
+    [InlineData(Keys.OemPeriod, 0xBEu)]
+    [InlineData(Keys.OemQuestion, 0xBFu)]
+    [InlineData(Keys.Oemtilde, 0xC0u)]
+    [InlineData(Keys.OemOpenBrackets, 0xDBu)]
+    [InlineData(Keys.OemPipe, 0xDCu)]
+    [InlineData(Keys.OemCloseBrackets, 0xDDu)]
+    [InlineData(Keys.OemQuotes, 0xDEu)]
+    [InlineData(Keys.OemBackslash, 0xE2u)]
+    [InlineData(Keys.Apps, 0x5Du)]
+    [InlineData(Keys.SelectMedia, 0xB5u)]
+    [InlineData(Keys.LaunchApplication1, 0xB6u)]
+    [InlineData(Keys.LaunchApplication2, 0xB7u)]
+    public void KeyStringToVk_RecognizesMainKeyboardAndEditingKeys(Keys key, uint expectedVk)
     {
-        var enumValue = (uint)Enum.Parse<Keys>(name, ignoreCase: false);
-        Assert.Equal(enumValue, expectedVk);
-        Assert.Equal(expectedVk, HotkeyService.KeyStringToVk(name));
+        Assert.Equal(expectedVk, HotkeyService.KeyStringToVk(key.ToString()));
+    }
+
+    /// <summary>
+    /// v1.0.6: Keys.Enter and Keys.Return are two names for the same virtual key (0x0D).
+    /// Both spellings must be accepted — they cannot be expressed as two InlineData rows
+    /// because they compile to identical arguments.
+    /// </summary>
+    [Fact]
+    public void KeyStringToVk_AcceptsBothEnterAndReturnSpellings()
+    {
+        Assert.Equal(0x0Du, HotkeyService.KeyStringToVk("Enter"));
+        Assert.Equal(0x0Du, HotkeyService.KeyStringToVk("Return"));
+        Assert.Equal(Keys.Enter, Keys.Return); // documents why this is a Fact, not a Theory
     }
 
     /// <summary>
@@ -459,10 +521,12 @@ public class HotkeyServiceTests
     /// WM_HOTKEY message consumed", not "is a hotkey live"; <see cref="HotkeyService.IsRegistered"/>
     /// is the state under test.
     /// </summary>
+    /// v1.0.6: "Space" is no longer an invalid key — it became settable in this release,
+    /// so it can no longer stand in as an example of an unresolvable key.
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
-    [InlineData("Space")]
+    [InlineData("NotAKey")]
     [InlineData("Back")]   // Backspace — the v1.0.3-era silent BrowserBack collision
     public void Register_InvalidKey_ReturnsFalse_AndStaysUnregistered(string key)
     {
@@ -481,7 +545,7 @@ public class HotkeyServiceTests
     /// </summary>
     [Theory]
     [InlineData("")]
-    [InlineData("Space")]
+    [InlineData("NotAKey")]
     [InlineData("Back")]
     public void Register_InvalidKey_KeepsPreviousRegistration(string invalidKey)
     {

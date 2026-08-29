@@ -118,9 +118,106 @@ public class HotkeyService
     /// Keys are matched case-insensitively. Includes both the Keys enum name and
     /// common aliases (e.g., "ScrollLock" for "Scroll").
     /// </summary>
-    private static readonly Dictionary<string, uint> NamedKeys =
+    /// <remarks>
+    /// <para>
+    /// Declared <c>internal</c> (with <c>InternalsVisibleTo</c> for the test assembly) so
+    /// the collision guard can enumerate it by reflection instead of relying on a
+    /// hand-maintained list that silently drifts out of sync.
+    /// </para>
+    /// <para>
+    /// Deliberately absent, because they are not usable as a hotkey <em>key</em>:
+    /// <list type="bullet">
+    /// <item><description><c>Back</c> — rejected since v1.0.5; use <c>Backspace</c>.</description></item>
+    /// <item><description>Modifier keys (<c>ShiftKey</c>, <c>ControlKey</c>, <c>Menu</c>,
+    /// <c>LShiftKey</c>, <c>RShiftKey</c>, <c>LControlKey</c>, <c>RControlKey</c>,
+    /// <c>LMenu</c>, <c>RMenu</c>) — handled as modifiers by <see cref="ParseModifiers"/>.</description></item>
+    /// <item><description>Mouse buttons (<c>LButton</c>, <c>RButton</c>, <c>MButton</c>,
+    /// <c>XButton1</c>, <c>XButton2</c>) and <c>None</c> — not keyboard keys.</description></item>
+    /// <item><description>Mask constants <c>KeyCode</c> and <c>Modifiers</c>, and the
+    /// modifier flags <c>Shift</c>, <c>Control</c>, <c>Alt</c> — not virtual keys.</description></item>
+    /// <item><description>Reserved / non-physical codes: <c>Cancel</c> (Ctrl+Break
+    /// pseudo-key), <c>LineFeed</c> (control character), <c>FinalMode</c> (IME-internal),
+    /// <c>ProcessKey</c>, <c>Packet</c>, and the IBM 3270 block <c>Attn</c>,
+    /// <c>Crsel</c>, <c>Exsel</c>, <c>EraseEof</c>, <c>Play</c>, <c>Zoom</c>,
+    /// <c>NoName</c>, <c>Pa1</c>.</description></item>
+    /// </list>
+    /// </para>
+    /// </remarks>
+    internal static readonly Dictionary<string, uint> NamedKeys =
         new(StringComparer.OrdinalIgnoreCase)
         {
+            // --- v1.0.6: main-keyboard digits (VK_0 – VK_9, 0x30–0x39) ---
+            // Keys.D0..D9 are what SettingsForm receives (e.KeyCode.ToString()) when the
+            // user presses a top-row digit. Without these, pressing "1" produced "D1",
+            // which resolved to 0 and was rejected as an invalid hotkey.
+            ["D0"] = 0x30,          // VK_0
+            ["D1"] = 0x31,          // VK_1
+            ["D2"] = 0x32,          // VK_2
+            ["D3"] = 0x33,          // VK_3
+            ["D4"] = 0x34,          // VK_4
+            ["D5"] = 0x35,          // VK_5
+            ["D6"] = 0x36,          // VK_6
+            ["D7"] = 0x37,          // VK_7
+            ["D8"] = 0x38,          // VK_8
+            ["D9"] = 0x39,          // VK_9
+
+            // --- v1.0.6: whitespace / editing keys ---
+            ["Tab"] = 0x09,         // VK_TAB
+            ["Clear"] = 0x0C,       // VK_CLEAR (numpad 5 with NumLock off)
+            ["Return"] = 0x0D,      // VK_RETURN — Keys.Return alias
+            ["Enter"] = 0x0D,       // VK_RETURN — Keys.Enter (same VK, both names accepted)
+            ["Escape"] = 0x1B,      // VK_ESCAPE
+            ["Space"] = 0x20,       // VK_SPACE
+
+            // --- v1.0.6: IME keys (real VKs on JP / KR keyboards) ---
+            ["KanaMode"] = 0x15,    // VK_KANA
+            ["HangulMode"] = 0x15,  // VK_HANGUL (same VK, alternative name)
+            ["HanguelMode"] = 0x15, // VK_HANGUEL (same VK, alternative name)
+            ["JunjaMode"] = 0x17,   // VK_JUNJA
+            ["KanjiMode"] = 0x19,   // VK_KANJI
+            ["HanjaMode"] = 0x19,   // VK_HANJA (same VK, alternative name)
+            ["IMEConvert"] = 0x1C,    // VK_CONVERT
+            ["IMENonconvert"] = 0x1D, // VK_NONCONVERT
+            ["IMEAccept"] = 0x1E,     // VK_ACCEPT
+            ["IMEAceept"] = 0x1E,     // VK_ACCEPT (note: .NET's own misspelled alias)
+            ["IMEModeChange"] = 0x1F, // VK_MODECHANGE
+
+            // --- v1.0.6: miscellaneous real keys ---
+            ["Select"] = 0x29,      // VK_SELECT
+            ["Print"] = 0x2A,       // VK_PRINT
+            ["Execute"] = 0x2B,     // VK_EXECUTE
+            ["Help"] = 0x2F,        // VK_HELP
+            ["LWin"] = 0x5B,        // VK_LWIN
+            ["RWin"] = 0x5C,        // VK_RWIN
+            ["Apps"] = 0x5D,        // VK_APPS (context-menu key)
+            ["Sleep"] = 0x5F,       // VK_SLEEP
+
+            // --- v1.0.6: OEM symbol keys (VK_OEM_*, 0xBA–0xE2) ---
+            // Both the descriptive .NET names and the numeric Oem1..Oem102 names are
+            // accepted; some pairs share one virtual-key code.
+            ["OemSemicolon"] = 0xBA,      // VK_OEM_1  ;:
+            ["Oem1"] = 0xBA,              // alias
+            ["Oemplus"] = 0xBB,           // VK_OEM_PLUS  =+
+            ["Oemcomma"] = 0xBC,          // VK_OEM_COMMA ,<
+            ["OemMinus"] = 0xBD,          // VK_OEM_MINUS -_
+            ["OemPeriod"] = 0xBE,         // VK_OEM_PERIOD .>
+            ["OemQuestion"] = 0xBF,       // VK_OEM_2  /?
+            ["Oem2"] = 0xBF,              // alias
+            ["Oemtilde"] = 0xC0,          // VK_OEM_3  `~
+            ["Oem3"] = 0xC0,              // alias
+            ["OemOpenBrackets"] = 0xDB,   // VK_OEM_4  [{
+            ["Oem4"] = 0xDB,              // alias
+            ["OemPipe"] = 0xDC,           // VK_OEM_5  \|
+            ["Oem5"] = 0xDC,              // alias
+            ["OemCloseBrackets"] = 0xDD,  // VK_OEM_6  ]}
+            ["Oem6"] = 0xDD,              // alias
+            ["OemQuotes"] = 0xDE,         // VK_OEM_7  '"
+            ["Oem7"] = 0xDE,              // alias
+            ["Oem8"] = 0xDF,              // VK_OEM_8
+            ["OemBackslash"] = 0xE2,      // VK_OEM_102 (102nd key, JP/BR layouts)
+            ["Oem102"] = 0xE2,            // alias
+            ["OemClear"] = 0xFE,          // VK_OEM_CLEAR
+
             ["PrintScreen"] = 0x2C, // VK_SNAPSHOT
             ["Snapshot"] = 0x2C,    // alias used by some WinForms versions
             ["Pause"] = 0x13,       // VK_PAUSE
@@ -209,6 +306,11 @@ public class HotkeyService
             ["MediaStop"] = 0xB2,         // VK_MEDIA_STOP
             ["MediaPlayPause"] = 0xB3,    // VK_MEDIA_PLAY_PAUSE
             ["LaunchMail"] = 0xB4,        // VK_LAUNCH_MAIL
+
+            // --- v1.0.6: remaining launch / media keys (0xB5–0xB7) ---
+            ["SelectMedia"] = 0xB5,          // VK_LAUNCH_MEDIA_SELECT
+            ["LaunchApplication1"] = 0xB6,   // VK_LAUNCH_APP1 ("My Computer")
+            ["LaunchApplication2"] = 0xB7,   // VK_LAUNCH_APP2 ("Calculator")
         };
 
     /// <summary>

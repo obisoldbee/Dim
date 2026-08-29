@@ -122,8 +122,32 @@ public class ConfigService
         return new HotkeyConfig
         {
             Modifiers = nullable.Modifiers ?? def.Modifiers,
-            Key = nullable.Key ?? def.Key
+            Key = MigrateHotkeyKey(nullable.Key ?? def.Key, def.Key)
         };
+    }
+
+    /// <summary>
+    /// v1.0.6 one-off migration: v1.0.3/v1.0.4 stored the Backspace key as "Back"
+    /// (that is exactly what <c>Keys.Back.ToString()</c> returns). v1.0.5 removed the
+    /// "Back" entry from the hotkey dictionary — it had been silently mapped to the
+    /// browser Back key — so those configs now resolve to virtual-key 0 and fail to
+    /// register on every launch. Rewrite just that one value to "Backspace".
+    /// Intentionally not a general alias mechanism: one rule, one reason.
+    /// </summary>
+    /// <param name="storedKey">Key string read from the config file.</param>
+    /// <param name="defaultKey">Factory default, returned when unmigrating is not needed.</param>
+    /// <returns>The migrated key string.</returns>
+    private static string MigrateHotkeyKey(string storedKey, string defaultKey)
+    {
+        if (string.IsNullOrWhiteSpace(storedKey)) return defaultKey;
+
+        if (string.Equals(storedKey.Trim(), "Back", StringComparison.OrdinalIgnoreCase))
+        {
+            LogService.Info("Config migrated: hotkey key \"Back\" rewritten to \"Backspace\"");
+            return "Backspace";
+        }
+
+        return storedKey;
     }
 
     /// <summary>

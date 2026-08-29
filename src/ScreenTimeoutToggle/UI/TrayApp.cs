@@ -27,6 +27,16 @@ public class TrayApp : ApplicationContext
     private bool _disposed;
 
     /// <summary>
+    /// Re-entrancy guards for the two operations that shell out to powercfg.
+    /// powercfg can legitimately take tens of seconds (see
+    /// <see cref="PowerConfigService.TimeoutMs"/>), so overlapping calls would queue up
+    /// long stalls and fight over the same power scheme. Interlocked is used rather than
+    /// a plain bool because the hotkey can fire while a switch is already in flight.
+    /// </summary>
+    private int _switching;
+    private int _applying;
+
+    /// <summary>
     /// Creates the tray application.
     /// </summary>
     /// <param name="configSvc">Config persistence service.</param>
@@ -136,6 +146,30 @@ public class TrayApp : ApplicationContext
     /// </summary>
     private async Task ToggleModeAsync()
     {
+        // v1.0.6: drop a toggle that arrives while one is still running. Holding the
+        // hotkey down used to stack concurrent powercfg calls on top of each other.
+        if (Interlocked.CompareExchange(ref _switching, 1, 0) != 0)
+        {
+            LogService.Info("Mode switch ignored: a switch is already in progress");
+            return;
+        }
+
+        try
+        {
+            await ToggleModeCoreAsync();
+        }
+        finally
+        {
+            Volatile.Write(ref _switching, 0);
+        }
+    }
+
+    /// <summary>
+    /// Performs the actual mode toggle. Only ever entered via <see cref="ToggleModeAsync"/>,
+    /// which owns the re-entrancy guard.
+    /// </summary>
+    private async Task ToggleModeCoreAsync()
+    {
         // C8: switch expression for clarity
         var target = _modeSvc.CurrentMode switch
         {
@@ -157,15 +191,15 @@ public class TrayApp : ApplicationContext
             // actionable message derived from the failure category; the raw text stays
             // in the log for diagnosis.
             LogService.Error($"Switch failed ({ex.Kind}): {ex.Message}", ex);
-            ShowBubble(LocalizationService.Get("bubble.switch_failed_title"),
-                       LocalizationService.GetPowerConfigError(ex.Kind, ex.Message),
-                       ToolTipIcon.Error);
+            ShowBubbleAsync(LocalizationService.Get("bubble.switch_failed_title"),
+                            LocalizationService.GetPowerConfigError(ex.Kind, ex.Message),
+                            ToolTipIcon.Error);
         }
         catch (Exception ex)
         {
             // A2: catch all exceptions (not just PowerConfigException)
             LogService.Error("Switch failed", ex);
-            ShowBubble(LocalizationService.Get("bubble.switch_failed_title"), ex.Message, ToolTipIcon.Error);
+            ShowBubbleAsync(LocalizationService.Get("bubble.switch_failed_title"), ex.Message, ToolTipIcon.Error);
         }
     }
 
@@ -247,6 +281,11 @@ public class TrayApp : ApplicationContext
                 }
                 else
                 {
+                    // Two very different failures share one false result: the key itself is
+                    // unusable (vk == 0) or the combination is already taken. They need
+                    // different advice, so distinguish them before picking the message.
+                    var keyIsInvalid = HotkeyService.KeyStringToVk(attemptedHotkey.Key) == 0;
+
                     // New key unavailable — try to bring the old key back. This can fail too
                     // (something else may have grabbed it in the meantime), in which case NO
                     // hotkey is live. Say so loudly instead of claiming we "reverted".
@@ -256,11 +295,18 @@ public class TrayApp : ApplicationContext
 
                     if (rolledBack)
                     {
-                        ShowBubble(LocalizationService.Get("bubble.hotkey_change_failed_title"),
-                                   LocalizationService.Get("bubble.hotkey_change_failed",
+                        var titleKey = keyIsInvalid
+                            ? "bubble.hotkey_change_invalid_title"
+                            : "bubble.hotkey_change_failed_title";
+                        var textKey = keyIsInvalid
+                            ? "bubble.hotkey_change_invalid"
+                            : "bubble.hotkey_change_failed";
+
+                        ShowBubble(LocalizationService.Get(titleKey),
+                                   LocalizationService.Get(textKey,
                                        attemptedHotkey.Modifiers, attemptedHotkey.Key),
                                    ToolTipIcon.Warning);
-                        LogService.Warn($"Hotkey change to {newKeyText} failed, reverted to {oldKeyText}");
+                        LogService.Warn($"Hotkey change to {newKeyText} failed ({(keyIsInvalid ? "invalid key" : "already in use")}), reverted to {oldKeyText}");
                     }
                     else
                     {
@@ -295,22 +341,11 @@ public class TrayApp : ApplicationContext
 
             if (currentModeValuesChanged)
             {
-                try
-                {
-                    _modeSvc.ReapplyCurrentMode();
-                }
-                catch (PowerConfigException ex)
-                {
-                    LogService.Error($"Reapply failed ({ex.Kind}): {ex.Message}", ex);
-                    ShowBubble(LocalizationService.Get("bubble.switch_failed_title"),
-                               LocalizationService.GetPowerConfigError(ex.Kind, ex.Message),
-                               ToolTipIcon.Error);
-                }
-                catch (Exception ex)
-                {
-                    LogService.Error("Reapply failed", ex);
-                    ShowBubble(LocalizationService.Get("bubble.switch_failed_title"), ex.Message, ToolTipIcon.Error);
-                }
+                // v1.0.6: powercfg must never run on the UI thread here. Worst case it is
+                // 3 steps x MaxAttempts x (timeout + kill grace) — over 100 seconds — which
+                // used to freeze the whole tray app while the settings dialog closed.
+                // Fire-and-forget is fine: failures surface as a balloon, not a return value.
+                _ = ApplyCurrentModeTimeoutsAsync();
             }
 
             // Language change: update runtime language, rebuild menu, notify user
@@ -326,6 +361,66 @@ public class TrayApp : ApplicationContext
             }
 
             _notify.Text = TooltipFor(_modeSvc.CurrentMode);
+        }
+    }
+
+    /// <summary>
+    /// Re-applies the current mode's timeout values via powercfg on a thread-pool thread.
+    /// </summary>
+    /// <remarks>
+    /// v1.0.6: extracted from <see cref="OpenSettings"/> because powercfg is slow and was
+    /// running synchronously on the UI thread. All UI work (the error balloon) is
+    /// marshalled back through <see cref="_syncRoot"/>, since the continuation after
+    /// <c>await Task.Run(...)</c> does not necessarily run on the UI thread.
+    /// A second call while one is in flight is dropped (the user can reopen Settings and
+    /// confirm again before the first apply has finished).
+    /// </remarks>
+    private async Task ApplyCurrentModeTimeoutsAsync()
+    {
+        if (Interlocked.CompareExchange(ref _applying, 1, 0) != 0)
+        {
+            LogService.Info("Timeout re-apply ignored: an apply is already in progress");
+            return;
+        }
+
+        try
+        {
+            await Task.Run(() => _modeSvc.ReapplyCurrentMode());
+        }
+        catch (PowerConfigException ex)
+        {
+            LogService.Error($"Reapply failed ({ex.Kind}): {ex.Message}", ex);
+            ShowBubbleAsync(LocalizationService.Get("bubble.switch_failed_title"),
+                            LocalizationService.GetPowerConfigError(ex.Kind, ex.Message),
+                            ToolTipIcon.Error);
+        }
+        catch (Exception ex)
+        {
+            LogService.Error("Reapply failed", ex);
+            ShowBubbleAsync(LocalizationService.Get("bubble.switch_failed_title"), ex.Message, ToolTipIcon.Error);
+        }
+        finally
+        {
+            Volatile.Write(ref _applying, 0);
+        }
+    }
+
+    /// <summary>
+    /// Shows a balloon, marshalling to the UI thread when called from a worker thread.
+    /// NotifyIcon is not a Control, so <see cref="_syncRoot"/> is used for marshalling.
+    /// </summary>
+    /// <param name="title">Balloon title.</param>
+    /// <param name="text">Balloon body.</param>
+    /// <param name="icon">Balloon icon.</param>
+    private void ShowBubbleAsync(string title, string text, ToolTipIcon icon)
+    {
+        if (_syncRoot.InvokeRequired)
+        {
+            _syncRoot.BeginInvoke(() => ShowBubble(title, text, icon));
+        }
+        else
+        {
+            ShowBubble(title, text, icon);
         }
     }
 

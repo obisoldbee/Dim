@@ -8,9 +8,19 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>OBDim</AssemblyName>
     <RootNamespace>OBDim</RootNamespace>
-    <Version>1.0.5</Version>
+    <Version>1.0.6</Version>
     <ApplicationIcon>assets\obdim.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <!--
+    v1.0.6: lets the test assembly (a) enumerate HotkeyService.NamedKeys via reflection
+    and (b) redirect LogService to a temp file. Nothing in the public API changes.
+  -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>ScreenTimeoutToggle.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
 
   <ItemGroup>
     <EmbeddedResource Include="assets\icon-work.ico" />

@@ -6,10 +6,25 @@ namespace OBDim.Services;
 /// </summary>
 public static class LogService
 {
-    private static readonly string LogPath = Path.Combine(
+    private static readonly string DefaultPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "ScreenTimeoutToggle",
         "log.txt");
+
+    /// <summary>
+    /// Redirects log output away from the real user log file.
+    /// </summary>
+    /// <remarks>
+    /// v1.0.6: unit tests drive the same code paths as production (powercfg retries,
+    /// config load failures, …) and every one of them used to append to the user's real
+    /// log. A single test run added hundreds of synthetic lines, which (a) buries real
+    /// evidence and (b) makes the 1&nbsp;MB trim discard genuine history first.
+    /// Production never sets this, so behaviour is byte-for-byte identical.
+    /// </remarks>
+    internal static string? OverridePath { get; set; }
+
+    /// <summary>Path actually used for writes; the override wins when set.</summary>
+    private static string LogPath => OverridePath ?? DefaultPath;
 
     private const long MaxLogSize = 1 * 1024 * 1024; // 1 MB
     private const long TrimKeepSize = 100 * 1024;     // keep last 100 KB when trimming

@@ -316,6 +316,96 @@ public class ConfigServiceTests
         Assert.Equal("zh-CN", cfg.Language);
     }
 
+    // ===== v1.0.6: "Back" → "Backspace" hotkey migration =====
+
+    /// <summary>
+    /// v1.0.6: configs written by v1.0.3/v1.0.4 stored the Backspace key as "Back"
+    /// (that is what Keys.Back.ToString() returns). v1.0.5 dropped "Back" from the hotkey
+    /// dictionary, so those users would get a failed registration on every launch.
+    /// </summary>
+    [Fact]
+    public void Load_LegacyBackHotkey_IsMigratedToBackspace()
+    {
+        var path = TempFile();
+        File.WriteAllText(path, """{"version":1,"hotkey":{"modifiers":"Ctrl+Alt","key":"Back"}}""");
+        var svc = new ConfigService(path);
+
+        var cfg = svc.Load();
+
+        Assert.Equal("Backspace", cfg.Hotkey.Key);
+        Assert.Equal("Ctrl+Alt", cfg.Hotkey.Modifiers);
+    }
+
+    /// <summary>
+    /// v1.0.6: the migrated key must resolve to a usable virtual key (VK_BACK = 8),
+    /// otherwise the migration would be cosmetic.
+    /// </summary>
+    [Fact]
+    public void Load_LegacyBackHotkey_MigratedKeyIsRegisterable()
+    {
+        var path = TempFile();
+        File.WriteAllText(path, """{"version":1,"hotkey":{"modifiers":"Ctrl+Alt","key":"Back"}}""");
+        var svc = new ConfigService(path);
+
+        var cfg = svc.Load();
+
+        Assert.Equal(0x08u, HotkeyService.KeyStringToVk(cfg.Hotkey.Key));
+    }
+
+    /// <summary>
+    /// v1.0.6: migration is case-insensitive and tolerates surrounding whitespace.
+    /// </summary>
+    [Theory]
+    [InlineData("Back")]
+    [InlineData("back")]
+    [InlineData("BACK")]
+    [InlineData("  Back  ")]
+    public void Load_LegacyBackHotkey_AnyCasing_IsMigrated(string storedKey)
+    {
+        var path = TempFile();
+        File.WriteAllText(path, $"{{\"version\":1,\"hotkey\":{{\"key\":\"{storedKey}\"}}}}");
+        var svc = new ConfigService(path);
+
+        Assert.Equal("Backspace", svc.Load().Hotkey.Key);
+    }
+
+    /// <summary>
+    /// v1.0.6: only "Back" is rewritten. Everything else must round-trip untouched —
+    /// this is deliberately NOT a general alias system.
+    /// </summary>
+    [Theory]
+    [InlineData("BrowserBack")]
+    [InlineData("Backspace")]
+    [InlineData("S")]
+    [InlineData("F5")]
+    [InlineData("NumPad0")]
+    public void Load_NonBackHotkey_IsLeftAlone(string key)
+    {
+        var path = TempFile();
+        File.WriteAllText(path, $"{{\"version\":1,\"hotkey\":{{\"key\":\"{key}\"}}}}");
+        var svc = new ConfigService(path);
+
+        Assert.Equal(key, svc.Load().Hotkey.Key);
+    }
+
+    /// <summary>
+    /// v1.0.6: a missing or empty key still falls back to the factory default rather
+    /// than being mangled by the migration.
+    /// </summary>
+    [Theory]
+    [InlineData("""{"version":1,"hotkey":{"modifiers":"Ctrl+Alt"}}""")]
+    [InlineData("""{"version":1,"hotkey":{"key":null}}""")]
+    [InlineData("""{"version":1,"hotkey":{"key":""}}""")]
+    [InlineData("""{"version":1}""")]
+    public void Load_MissingOrEmptyHotkeyKey_UsesFactoryDefault(string json)
+    {
+        var path = TempFile();
+        File.WriteAllText(path, json);
+        var svc = new ConfigService(path);
+
+        Assert.Equal("S", svc.Load().Hotkey.Key);
+    }
+
     /// <summary>
     /// v1.0.2: Whitespace-only language in JSON should default to "zh-CN".
     /// </summary>
