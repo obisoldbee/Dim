@@ -3,9 +3,21 @@ using OBDim.Models;
 
 namespace OBDim.Services;
 
-public class HotkeyService
+public class HotkeyService : IDisposable
 {
     private const int WM_HOTKEY = 0x0312;
+
+    /// <summary>
+    /// The one and only hotkey id this service ever uses.
+    /// </summary>
+    /// <remarks>
+    /// v1.0.7 (M5): <c>Register</c> and <c>Unregister</c> used to accept an id parameter
+    /// that no caller ever supplied, while <see cref="WndProc"/> only ever recognised
+    /// <c>HOTKEY_ID</c>. Registering under a custom id therefore produced a hotkey that
+    /// was live (per <see cref="IsRegistered"/>) but could never fire, and could not even
+    /// be released by the parameterless <c>Unregister()</c>. The service owns exactly one
+    /// hotkey, so the parameter was removed rather than papered over.
+    /// </remarks>
     private const int HOTKEY_ID = 1;
 
     [Flags]
@@ -29,6 +41,14 @@ public class HotkeyService
     private IntPtr _hwnd;
     private bool _registered;
 
+    /// <summary>
+    /// Modifiers and virtual key of the live registration. Remembered so a refused swap
+    /// can put the previous hotkey back: releasing needs only an id, but re-registering
+    /// needs the whole combination.
+    /// </summary>
+    private uint _registeredMods;
+    private uint _registeredVk;
+
     public event Action? HotkeyPressed;
 
     /// <summary>
@@ -46,16 +66,33 @@ public class HotkeyService
     public void SetHwnd(IntPtr hwnd) => _hwnd = hwnd;
 
     /// <summary>
-    /// Registers a global hotkey. Internally unregisters any previously registered hotkey first.
-    /// Returns false if the key combination is invalid or already in use by another application.
+    /// Registers a global hotkey, replacing any hotkey this service already owns.
     /// </summary>
+    /// <param name="cfg">Key combination to register.</param>
+    /// <returns>
+    /// False if the key combination is invalid or already in use by another application.
+    /// In that case the previously registered hotkey is restored whenever Windows still
+    /// lets us have it.
+    /// </returns>
     /// <remarks>
+    /// <para>
     /// v1.0.5: The key string is validated and resolved to a virtual-key code BEFORE the
     /// previously registered hotkey is unregistered. Previously the order was
     /// "unregister → parse", so an invalid new key left the service in a dangling state
     /// (old key gone, no new key registered) with no way to roll back atomically.
+    /// </para>
+    /// <para>
+    /// v1.0.7 (M6): that atomicity only ever covered the invalid-key branch. "Combination
+    /// already in use" — by far the more common failure — still went
+    /// <c>Unregister(old) → Register(new)</c>, so a refusal from Windows left the app with
+    /// no hotkey at all. There is no atomic swap in the Win32 API, so the next best thing
+    /// is a recorded rollback: the live combination is remembered and re-registered when
+    /// the new one is refused. Restoring it can fail too (something else may have taken
+    /// the old combination during the gap), which is logged as an error rather than
+    /// reported as a successful revert.
+    /// </para>
     /// </remarks>
-    public bool Register(HotkeyConfig cfg, int id = HOTKEY_ID)
+    public bool Register(HotkeyConfig cfg)
     {
         // Resolve first — never tear down the working hotkey for a key we cannot register.
         var vk = KeyStringToVk(cfg.Key);
@@ -66,22 +103,83 @@ public class HotkeyService
         }
 
         var mods = ParseModifiers(cfg.Modifiers);
-        Unregister(id);
-        _registered = RegisterHotKey(_hwnd, id, mods, vk);
-        if (!_registered)
+
+        // Snapshot what is live, so a refused swap can be undone.
+        var previousMods = _registeredMods;
+        var previousVk = _registeredVk;
+        var hadPrevious = _registered;
+
+        if (hadPrevious)
+            UnregisterHotKey(_hwnd, HOTKEY_ID);
+
+        if (RegisterHotKey(_hwnd, HOTKEY_ID, mods, vk))
         {
-            LogService.Warn($"Failed to register hotkey: {cfg.Modifiers}+{cfg.Key}");
+            SetLive(mods, vk);
+            return true;
         }
-        return _registered;
+
+        LogService.Warn($"Failed to register hotkey: {cfg.Modifiers}+{cfg.Key}");
+
+        if (!hadPrevious)
+        {
+            ClearLive();
+            return false;
+        }
+
+        // Roll back. Re-registering the old combination can fail as well, in which case no
+        // hotkey is live — the caller reads IsRegistered to find out.
+        if (RegisterHotKey(_hwnd, HOTKEY_ID, previousMods, previousVk))
+        {
+            SetLive(previousMods, previousVk);
+            LogService.Info("Hotkey change refused; the previous registration is live again");
+        }
+        else
+        {
+            ClearLive();
+            LogService.Error("Hotkey change was refused and the previous hotkey could not be restored; no hotkey is registered");
+        }
+
+        return false;
     }
 
-    public void Unregister(int id = HOTKEY_ID)
+    /// <summary>
+    /// Releases the hotkey owned by this service, if any.
+    /// </summary>
+    public void Unregister()
     {
         if (_registered)
         {
-            UnregisterHotKey(_hwnd, id);
-            _registered = false;
+            UnregisterHotKey(_hwnd, HOTKEY_ID);
+            ClearLive();
         }
+    }
+
+    /// <summary>
+    /// Releases the hotkey. Same effect as <see cref="Unregister"/>.
+    /// </summary>
+    /// <remarks>
+    /// v1.0.7 (M12): the service used to depend on every caller remembering to call
+    /// <c>Unregister()</c> on every exit path; an exception in between left a global
+    /// hotkey registered to a dead window.
+    /// </remarks>
+    public void Dispose()
+    {
+        Unregister();
+        GC.SuppressFinalize(this);
+    }
+
+    private void SetLive(uint mods, uint vk)
+    {
+        _registered = true;
+        _registeredMods = mods;
+        _registeredVk = vk;
+    }
+
+    private void ClearLive()
+    {
+        _registered = false;
+        _registeredMods = 0;
+        _registeredVk = 0;
     }
 
     public bool WndProc(Message msg)

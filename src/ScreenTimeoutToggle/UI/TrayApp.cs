@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using OBDim.Models;
 using OBDim.Services;
@@ -20,11 +21,28 @@ public class TrayApp : ApplicationContext
     private readonly Control _syncRoot;
     private AppConfig _config;
 
-    private readonly Icon _iconWork;
-    private readonly Icon _iconAway;
-    private readonly Icon _iconUnknown;
+    /// <summary>
+    /// v1.0.7: the three mode icons were byte-identical (all four .ico files are the same
+    /// unified OB Dim mark — a deliberate branding decision). Keeping three embedded
+    /// copies and three loads around would have been pure dead weight, so there is one
+    /// icon resource. Mode is communicated by the tooltip, the context menu and the
+    /// balloon instead.
+    /// </summary>
+    private readonly Icon _iconApp;
 
-    private bool _disposed;
+    private volatile bool _disposed;
+
+    /// <summary>
+    /// VIDEOIDLE values (seconds) last read from the system. -1 means "never measured".
+    /// </summary>
+    /// <remarks>
+    /// v1.0.7: the startup read produced these values and then threw them away after
+    /// <see cref="ModeService.MatchCurrentMode"/>. They are the only honest numbers to
+    /// show while the mode is Unknown, so they are kept.
+    /// </remarks>
+    private readonly object _measuredLock = new();
+    private long _measuredAcSeconds = -1;
+    private long _measuredDcSeconds = -1;
 
     /// <summary>
     /// Re-entrancy guards for the two operations that shell out to powercfg.
@@ -62,31 +80,25 @@ public class TrayApp : ApplicationContext
         // Set localization language from config (also set by Program.cs for early messages)
         LocalizationService.CurrentLanguage = _config.Language;
 
-        // Hidden control for thread marshaling (NotifyIcon is not a Control)
+        // v1.0.7 CRITICAL FIX: Control creates its window handle lazily. Until it exists,
+        // InvokeRequired walks the parent chain looking for a marshaling control, finds
+        // none, and returns false — so every BeginInvoke branch below was dead code and
+        // UpdateModeUI ran on whatever thread raised ModeChanged. ModeChanged is raised
+        // inside Task.Run (see ToggleModeCoreAsync), so that was every single switch.
+        // Touching .Handle here forces creation; the constructor runs on the UI thread,
+        // which is exactly the thread the handle must belong to.
         _syncRoot = new Control();
+        _ = _syncRoot.Handle;
+        Debug.Assert(_syncRoot.IsHandleCreated,
+            "_syncRoot must own a window handle, otherwise InvokeRequired always returns false and UI marshalling silently stops working.");
 
-        // Load icons from embedded resources
-        _iconWork = LoadIcon("icon-work.ico");
-        _iconAway = LoadIcon("icon-away.ico");
-        _iconUnknown = LoadIcon("icon-unknown.ico");
+        // Load the single unified icon from embedded resources
+        _iconApp = LoadIcon("obdim.ico");
 
         // Create hidden message window for WM_HOTKEY
         _msgWindow = new HiddenMessageWindow(_hotkeySvc);
         _msgWindow.CreateHandle();
         _hotkeySvc.SetHwnd(_msgWindow.Handle);
-
-        // Match current system state (reads powercfg, may throw — non-fatal)
-        try
-        {
-            var (ac, dc) = _powerSvc.GetCurrentVideoIdle();
-            var matched = _modeSvc.MatchCurrentMode(ac, dc);
-            _modeSvc.SetCurrentMode(matched);
-        }
-        catch (Exception ex)
-        {
-            LogService.Warn($"Startup mode match failed: {ex.Message}");
-            // leave as Unknown
-        }
 
         // Register global hotkey (non-fatal if it fails)
         if (!_hotkeySvc.Register(_config.Hotkey))
@@ -98,14 +110,21 @@ public class TrayApp : ApplicationContext
         _hotkeySvc.HotkeyPressed += OnHotkeyPressed;
         _modeSvc.ModeChanged += OnModeChanged;
 
-        // Create tray icon
+        // v1.0.7: the tray icon is created BEFORE the startup powercfg read and starts out
+        // as Unknown. Matching the system state used to happen synchronously right here,
+        // in the constructor, on the UI thread: worst case 2 attempts x (15 s timeout +
+        // 2 s kill grace) = ~34 s during which no tray icon existed at all and the app
+        // looked hung. v1.0.6 fixed the toggle path and the settings-apply path but
+        // missed this one.
         _notify = new NotifyIcon
         {
             Icon = IconFor(_modeSvc.CurrentMode),
             Visible = true,
             Text = TooltipFor(_modeSvc.CurrentMode)
         };
-        _notify.DoubleClick += async (_, _) => await ToggleModeAsync();
+        // spec §2.1(1): a single left click toggles — it used to be DoubleClick, so a
+        // plain click did nothing.
+        _notify.Click += async (_, _) => await ToggleModeAsync();
 
         BuildContextMenu();
         UpdateSwitchMenuItem();
@@ -123,7 +142,21 @@ public class TrayApp : ApplicationContext
         // Hook ApplicationExit for cleanup on all exit paths (C2)
         Application.ApplicationExit += (_, _) => Dispose();
 
-        LogService.Info($"OB Dim started. CurrentMode={_modeSvc.CurrentMode}");
+        // v1.0.7: the config file could not be parsed and every value is back to factory
+        // defaults. Say so — the previous behaviour was a silent full reset.
+        if (_configSvc.LastLoadWasRecovered)
+        {
+            ShowBubble(LocalizationService.Get("bubble.config_reset_title"),
+                       LocalizationService.Get("bubble.config_reset"),
+                       ToolTipIcon.Warning);
+        }
+
+        LogService.Info($"OB Dim started. CurrentMode={_modeSvc.CurrentMode} (startup match pending)");
+
+        // Must come after _notify exists. The continuation is posted to the UI thread's
+        // message loop, which is not pumped until Application.Run, so it cannot land
+        // before the constructor finishes.
+        _ = MatchStartupModeAsync();
     }
 
     private void BuildContextMenu()
@@ -138,6 +171,85 @@ public class TrayApp : ApplicationContext
 
         menu.Items.AddRange(new ToolStripItem[] { switchItem, settingsItem, new ToolStripSeparator(), exitItem });
         _notify.ContextMenuStrip = menu;
+    }
+
+    /// <summary>
+    /// Reads the real system VIDEOIDLE values and resolves the startup mode off the UI
+    /// thread, then refreshes the icon, tooltip and menu item.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately does not call <see cref="ModeService.SwitchTo"/>: spec §6.2 says an
+    /// unmatched system must be left alone, and this must never write to the power scheme.
+    /// </remarks>
+    private async Task MatchStartupModeAsync()
+    {
+        try
+        {
+            var (ac, dc) = await Task.Run(() => _powerSvc.GetCurrentVideoIdle());
+
+            // Keep the measured values: they are what the Unknown tooltip reports.
+            SetMeasured(ac, dc);
+
+            var matched = _modeSvc.MatchCurrentMode(ac, dc);
+            _modeSvc.SetCurrentMode(matched);
+            RefreshStartupModeUI(matched);
+        }
+        catch (Exception ex)
+        {
+            LogService.Warn($"Startup mode match failed: {ex.Message}");
+            // leave as Unknown
+        }
+    }
+
+    /// <summary>
+    /// Applies the resolved startup mode to the tray, marshalling back to the UI thread.
+    /// No balloon: nothing changed from the user's point of view, we only just found out
+    /// what the system was already doing.
+    /// </summary>
+    /// <param name="mode">Mode resolved from the system.</param>
+    private void RefreshStartupModeUI(AppMode mode)
+    {
+        if (_disposed) return;
+
+        if (_syncRoot.InvokeRequired)
+            _syncRoot.BeginInvoke(() => ApplyStartupModeUI(mode));
+        else
+            ApplyStartupModeUI(mode);
+    }
+
+    private void ApplyStartupModeUI(AppMode mode)
+    {
+        if (_disposed) return;
+
+        _notify.Icon = IconFor(mode);
+        _notify.Text = TooltipFor(mode);
+        UpdateSwitchMenuItem();
+        LogService.Info($"Startup mode match resolved: {mode}");
+    }
+
+    private void SetMeasured(long acSeconds, long dcSeconds)
+    {
+        lock (_measuredLock)
+        {
+            _measuredAcSeconds = acSeconds;
+            _measuredDcSeconds = dcSeconds;
+        }
+    }
+
+    /// <summary>
+    /// Gets the most recent measured system values, if any have been read yet.
+    /// </summary>
+    /// <param name="acSeconds">Measured AC VIDEOIDLE in seconds.</param>
+    /// <param name="dcSeconds">Measured DC VIDEOIDLE in seconds.</param>
+    /// <returns>True when a measurement is available.</returns>
+    private bool TryGetMeasured(out long acSeconds, out long dcSeconds)
+    {
+        lock (_measuredLock)
+        {
+            acSeconds = _measuredAcSeconds;
+            dcSeconds = _measuredDcSeconds;
+            return acSeconds >= 0 && dcSeconds >= 0;
+        }
     }
 
     /// <summary>
@@ -183,7 +295,15 @@ public class TrayApp : ApplicationContext
             // C6: run powercfg on thread pool to avoid blocking UI
             await Task.Run(() => _modeSvc.SwitchTo(target));
             _config = _config with { CurrentMode = target };
-            _configSvc.Save(_config);
+            if (!_configSvc.Save(_config))
+            {
+                // v1.0.7: the switch already took effect in the power scheme, but it will
+                // not survive a restart. Silently swallowing the failure left the user
+                // believing everything was fine.
+                ShowBubbleAsync(LocalizationService.Get("bubble.save_failed_title"),
+                                LocalizationService.Get("bubble.save_failed"),
+                                ToolTipIcon.Warning);
+            }
         }
         catch (PowerConfigException ex)
         {
@@ -215,6 +335,8 @@ public class TrayApp : ApplicationContext
     /// </summary>
     private void OnModeChanged(object? sender, AppMode mode)
     {
+        if (_disposed) return;
+
         if (_syncRoot.InvokeRequired)
         {
             _syncRoot.BeginInvoke(() => UpdateModeUI(mode));
@@ -227,6 +349,8 @@ public class TrayApp : ApplicationContext
 
     private void UpdateModeUI(AppMode mode)
     {
+        if (_disposed) return;
+
         _notify.Icon = IconFor(mode);
         _notify.Text = TooltipFor(mode);
         UpdateSwitchMenuItem();
@@ -320,7 +444,24 @@ public class TrayApp : ApplicationContext
                 }
             }
 
-            _configSvc.Save(effectiveCfg);
+            // v1.0.7 (M3): SettingsForm is modal but still pumps messages, so a mode switch
+            // can complete while the dialog is open. form.Result was built from the config
+            // as it was when the dialog was shown, so it still carries the stale
+            // CurrentMode; writing it back would undo the switch that just happened (and
+            // was already persisted). Re-apply the live mode instead.
+            if (_modeSvc.CurrentMode != effectiveCfg.CurrentMode)
+            {
+                effectiveCfg = effectiveCfg with { CurrentMode = _modeSvc.CurrentMode };
+            }
+
+            if (!_configSvc.Save(effectiveCfg))
+            {
+                // v1.0.7: everything else in this method is about to be applied in memory,
+                // so the settings are live but not durable. Tell the user.
+                ShowBubble(LocalizationService.Get("bubble.save_failed_title"),
+                           LocalizationService.Get("bubble.save_failed"),
+                           ToolTipIcon.Warning);
+            }
             _config = effectiveCfg;
 
             if (effectiveCfg.AutoStart != oldCfg.AutoStart)
@@ -374,6 +515,11 @@ public class TrayApp : ApplicationContext
     /// <c>await Task.Run(...)</c> does not necessarily run on the UI thread.
     /// A second call while one is in flight is dropped (the user can reopen Settings and
     /// confirm again before the first apply has finished).
+    /// <para>
+    /// v1.0.7: that marshalling is now real. Until this release <c>_syncRoot</c> had no
+    /// window handle, so <c>InvokeRequired</c> was always false and the comment above was
+    /// describing behaviour the code did not have.
+    /// </para>
     /// </remarks>
     private async Task ApplyCurrentModeTimeoutsAsync()
     {
@@ -414,6 +560,8 @@ public class TrayApp : ApplicationContext
     /// <param name="icon">Balloon icon.</param>
     private void ShowBubbleAsync(string title, string text, ToolTipIcon icon)
     {
+        if (_disposed) return;
+
         if (_syncRoot.InvokeRequired)
         {
             _syncRoot.BeginInvoke(() => ShowBubble(title, text, icon));
@@ -431,31 +579,75 @@ public class TrayApp : ApplicationContext
         ExitThread();
     }
 
-    private Icon IconFor(AppMode mode) => mode switch
-    {
-        AppMode.Work => _iconWork,
-        AppMode.Away => _iconAway,
-        _ => _iconUnknown
-    };
+    /// <summary>
+    /// Returns the tray icon for a mode.
+    /// </summary>
+    /// <param name="mode">Current mode (retained for call-site readability).</param>
+    /// <returns>The unified OB Dim icon.</returns>
+    /// <remarks>
+    /// v1.0.7: this used to select between three embedded icons that were byte-identical
+    /// copies of each other. One resource, one icon; the mode is reported by the tooltip,
+    /// the menu item and the balloon.
+    /// </remarks>
+    private Icon IconFor(AppMode mode) => _iconApp;
 
     private string TooltipFor(AppMode mode)
     {
+        // v1.0.7 (I3): Unknown means "the system matches no configured mode", so the only
+        // honest numbers are the ones actually read from the system. Showing the Work
+        // configuration here (the v1.0.6 behaviour) reported a value the system is not
+        // running — the worst possible thing to be wrong about in an app whose entire job
+        // is telling the user what the screen is going to do.
+        if (mode == AppMode.Unknown)
+        {
+            // Between "tray icon appeared" and "startup powercfg read came back" there is
+            // nothing measured yet. Say so rather than quoting a configuration value the
+            // system may not be running.
+            if (!TryGetMeasured(out var acSeconds, out var dcSeconds))
+                return LocalizationService.Get("tooltip.detecting");
+
+            return FormatTooltip("tooltip.unknown", SecondsToMinutes(acSeconds), SecondsToMinutes(dcSeconds));
+        }
+
         var (acMin, dcMin) = mode == AppMode.Away
             ? (_config.Away.AcMinutes, _config.Away.DcMinutes)
             : (_config.Work.AcMinutes, _config.Work.DcMinutes);
-        var acTxt = acMin == 0
-            ? LocalizationService.Get("common.never")
-            : LocalizationService.Get("common.minutes", acMin);
-        var dcTxt = dcMin == 0
-            ? LocalizationService.Get("common.never")
-            : LocalizationService.Get("common.minutes", dcMin);
         var tooltipKey = mode switch
         {
             AppMode.Work => "tooltip.work",
             AppMode.Away => "tooltip.away",
             _ => "tooltip.unknown"
         };
-        return LocalizationService.Get(tooltipKey, acTxt, dcTxt);
+        return FormatTooltip(tooltipKey, acMin, dcMin);
+    }
+
+    /// <summary>
+    /// Formats a tooltip line, rendering 0 as "never".
+    /// </summary>
+    /// <param name="key">Localization key of the tooltip template.</param>
+    /// <param name="acMin">AC timeout in minutes.</param>
+    /// <param name="dcMin">DC timeout in minutes.</param>
+    /// <returns>The localized tooltip.</returns>
+    private static string FormatTooltip(string key, long acMin, long dcMin)
+    {
+        var acTxt = acMin == 0
+            ? LocalizationService.Get("common.never")
+            : LocalizationService.Get("common.minutes", acMin);
+        var dcTxt = dcMin == 0
+            ? LocalizationService.Get("common.never")
+            : LocalizationService.Get("common.minutes", dcMin);
+        return LocalizationService.Get(key, acTxt, dcTxt);
+    }
+
+    /// <summary>
+    /// Converts a system VIDEOIDLE value from seconds to whole minutes.
+    /// </summary>
+    /// <param name="seconds">Value read from powercfg, in seconds.</param>
+    /// <returns>Minutes, clamped so an implausibly large value cannot overflow the UI.</returns>
+    private static long SecondsToMinutes(long seconds)
+    {
+        if (seconds <= 0) return 0;
+        return Math.Min(seconds / 60, int.MaxValue);
     }
 
     /// <summary>
@@ -470,6 +662,8 @@ public class TrayApp : ApplicationContext
 
     private void ShowBubble(string title, string text, ToolTipIcon icon)
     {
+        if (_disposed) return;
+
         _notify.BalloonTipTitle = title;
         _notify.BalloonTipText = text;
         _notify.BalloonTipIcon = icon;
@@ -496,12 +690,12 @@ public class TrayApp : ApplicationContext
 
         if (disposing)
         {
-            try { _hotkeySvc.Unregister(); } catch { /* best effort */ }
+            // v1.0.7: HotkeyService is IDisposable now, so cleanup no longer depends on
+            // the caller remembering to call Unregister().
+            try { _hotkeySvc.Dispose(); } catch { /* best effort */ }
             try { _notify.Visible = false; } catch { /* best effort */ }
             try { _notify.Dispose(); } catch { /* best effort */ }
-            try { _iconWork.Dispose(); } catch { /* best effort */ }
-            try { _iconAway.Dispose(); } catch { /* best effort */ }
-            try { _iconUnknown.Dispose(); } catch { /* best effort */ }
+            try { _iconApp.Dispose(); } catch { /* best effort */ }
             try { _msgWindow.DestroyHandle(); } catch { /* best effort */ }
             try { _syncRoot.Dispose(); } catch { /* best effort */ }
         }

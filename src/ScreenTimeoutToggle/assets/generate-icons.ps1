@@ -1,7 +1,25 @@
-# Generates 3 simple colored .ico files for the tray (Work / Away / Unknown).
-# Uses System.Drawing (built into Windows PowerShell 5.1).
-# Run once to (re)generate assets:
-#   powershell -ExecutionPolicy Bypass -File generate-icons.ps1
+<#
+.SYNOPSIS
+    Regenerates assets\obdim.ico, the single tray icon.
+
+.DESCRIPTION
+    v1.0.7: this script USED to generate three colour-coded icons (W/A/?) so the tray
+    could show the current mode at a glance. That is no longer the design. The three
+    files were replaced by byte-identical copies of obdim.ico back in 3d9ab2b — a
+    deliberate branding decision (one unified OB Dim mark) — which left the old script
+    in a position to silently undo it: anyone running it would have re-created three
+    different icons and quietly reverted the brand.
+
+    DO NOT reintroduce per-mode icons here. Mode is reported by the tooltip, the context
+    menu and the balloon notification instead. If the OB Dim mark ever changes, replace
+    assets\obdim.ico (it is also the EXE icon, via <ApplicationIcon> in the csproj) and
+    only re-run this script after editing $Letter / $Color below.
+
+    Uses System.Drawing (built into Windows PowerShell 5.1).
+
+.EXAMPLE
+    powershell -ExecutionPolicy Bypass -File generate-icons.ps1
+#>
 Add-Type -AssemblyName System.Drawing
 
 function Save-Icon([string]$letter, [System.Drawing.Color]$color, [string]$path) {
@@ -28,7 +46,5 @@ function Save-Icon([string]$letter, [System.Drawing.Color]$color, [string]$path)
 }
 
 $dir = Split-Path -Parent $MyInvocation.MyCommand.Path
-Save-Icon 'W' ([System.Drawing.Color]::FromArgb(255, 0, 176, 80))    "$dir\icon-work.ico"
-Save-Icon 'A' ([System.Drawing.Color]::FromArgb(255, 224, 112, 32))  "$dir\icon-away.ico"
-Save-Icon '?' ([System.Drawing.Color]::FromArgb(255, 128, 128, 128)) "$dir\icon-unknown.ico"
-Write-Host "Done."
+Save-Icon 'O' ([System.Drawing.Color]::FromArgb(255, 0, 120, 96)) "$dir\obdim.ico"
+Write-Host "Done. Rebuild so the new icon is embedded: dotnet build -c Release"

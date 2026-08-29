@@ -8,7 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>OBDim</AssemblyName>
     <RootNamespace>OBDim</RootNamespace>
-    <Version>1.0.6</Version>
+    <Version>1.0.7</Version>
     <ApplicationIcon>assets\obdim.ico</ApplicationIcon>
   </PropertyGroup>
 
@@ -22,10 +22,15 @@
     </AssemblyAttribute>
   </ItemGroup>
 
+  <!--
+    v1.0.7: one icon, not three. assets\icon-work.ico / icon-away.ico / icon-unknown.ico
+    were replaced by byte-identical copies of obdim.ico back in 3d9ab2b (unified branding,
+    a user decision), so embedding three of them pulled the same 48 KB into the assembly
+    three times and TrayApp.IconFor had nothing real to choose between. Mode is now
+    reported by the tooltip, the context menu and the balloon.
+  -->
   <ItemGroup>
-    <EmbeddedResource Include="assets\icon-work.ico" />
-    <EmbeddedResource Include="assets\icon-away.ico" />
-    <EmbeddedResource Include="assets\icon-unknown.ico" />
+    <EmbeddedResource Include="assets\obdim.ico" />
   </ItemGroup>
 
 </Project>

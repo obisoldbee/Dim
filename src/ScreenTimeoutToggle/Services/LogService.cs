@@ -30,6 +30,15 @@ public static class LogService
     private const long TrimKeepSize = 100 * 1024;     // keep last 100 KB when trimming
 
     /// <summary>
+    /// Serializes writers. <see cref="File.AppendAllText"/> opens the log with
+    /// <c>FileShare.Read</c>, so two concurrent writes throw <see cref="IOException"/> and
+    /// the losing line is dropped — usually the line describing the failure you are trying
+    /// to diagnose. The trim and the append are one unit: without the lock, a trim
+    /// running between another thread's trim and append would discard what was just appended.
+    /// </summary>
+    private static readonly object Sync = new();
+
+    /// <summary>
     /// Writes a single log line with timestamp and level.
     /// </summary>
     public static void Log(string level, string message)
@@ -40,10 +49,13 @@ public static class LogService
             if (!string.IsNullOrEmpty(dir))
                 Directory.CreateDirectory(dir);
 
-            TrimIfNeeded();
-
             var line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [{level}] {message}{Environment.NewLine}";
-            File.AppendAllText(LogPath, line);
+
+            lock (Sync)
+            {
+                TrimIfNeeded();
+                File.AppendAllText(LogPath, line);
+            }
         }
         catch
         {
@@ -64,6 +76,15 @@ public static class LogService
     /// <summary>
     /// Trims the log file if it exceeds MaxLogSize, keeping the most recent TrimKeepSize bytes.
     /// </summary>
+    /// <remarks>
+    /// Callers must hold <see cref="Sync"/>.
+    /// <para>
+    /// v1.0.7: this used to <see cref="File.ReadAllBytes"/> the entire file. Once the log
+    /// passes MaxLogSize that is at least 1&nbsp;MB read on <em>every single</em>
+    /// subsequent line — the steady state for a long-lived tray app. Only the tail is
+    /// needed, so it is seeked to and read directly.
+    /// </para>
+    /// </remarks>
     private static void TrimIfNeeded()
     {
         try
@@ -71,13 +92,31 @@ public static class LogService
             if (!File.Exists(LogPath)) return;
             var info = new FileInfo(LogPath);
             if (info.Length <= MaxLogSize) return;
+            if (info.Length <= TrimKeepSize) return;
 
-            var bytes = File.ReadAllBytes(LogPath);
-            if (bytes.Length <= TrimKeepSize) return;
+            byte[] trimmed;
+            using (var stream = new FileStream(LogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            {
+                var keep = (int)Math.Min(TrimKeepSize, stream.Length);
+                stream.Seek(-keep, SeekOrigin.End);
 
-            var trimmed = new byte[TrimKeepSize];
-            var offset = bytes.Length - TrimKeepSize;
-            Array.Copy(bytes, offset, trimmed, 0, TrimKeepSize);
+                trimmed = new byte[keep];
+                var read = 0;
+                while (read < keep)
+                {
+                    var n = stream.Read(trimmed, read, keep - read);
+                    if (n <= 0) break;
+                    read += n;
+                }
+
+                if (read < keep)
+                {
+                    // The file shrank underneath us (another process trimmed it). Keep
+                    // what was actually read rather than padding the tail with zeroes.
+                    Array.Resize(ref trimmed, read);
+                }
+            }
+
             File.WriteAllBytes(LogPath, trimmed);
         }
         catch

@@ -6,10 +6,21 @@ namespace OBDim.Services;
 /// </summary>
 public static class LocalizationService
 {
+    private static volatile string _currentLanguage = "zh-CN";
+
     /// <summary>
     /// The currently active language code. Set by TrayApp at startup from config.
     /// </summary>
-    public static string CurrentLanguage { get; set; } = "zh-CN";
+    /// <remarks>
+    /// v1.0.7: the switch happens on the UI thread while background threads (powercfg
+    /// continuations, hotkey handlers) may be formatting a balloon, so the backing field
+    /// is volatile — a plain static string may be cached in a register and never re-read.
+    /// </remarks>
+    public static string CurrentLanguage
+    {
+        get => _currentLanguage;
+        set => _currentLanguage = value ?? "zh-CN";
+    }
 
     /// <summary>
     /// All translation dictionaries, keyed by language code.
@@ -39,10 +50,19 @@ public static class LocalizationService
             ["bubble.language_changed_title"] = "语言已切换",
             ["bubble.language_changed"] = "语言已切换为{0}，部分界面将在重启后完全生效。",
 
+            // v1.0.7: config persistence failures are no longer silent
+            ["bubble.save_failed_title"] = "设置未能保存",
+            ["bubble.save_failed"] = "本次修改已经生效，但写入配置文件失败（磁盘已满或文件被占用）。重启后可能回到旧设置。",
+            ["bubble.config_reset_title"] = "设置已重置",
+            ["bubble.config_reset"] = "配置文件无法解析，已自动备份并恢复默认设置。请重新设置超时值与热键。",
+
             // Tooltip (tray icon hover)
             ["tooltip.work"] = "工作 · 电源 {0} / 电池 {1}",
             ["tooltip.away"] = "离开 · 电源 {0} / 电池 {1}",
             ["tooltip.unknown"] = "未知 · 电源 {0} / 电池 {1}",
+            // v1.0.7: shown while the startup powercfg read is still in flight. Better
+            // "don't know yet" than a number the system is not running.
+            ["tooltip.detecting"] = "正在读取系统当前设置…",
 
             // Common values
             ["common.never"] = "从不",
@@ -113,10 +133,18 @@ public static class LocalizationService
             ["bubble.language_changed_title"] = "Language Changed",
             ["bubble.language_changed"] = "Language changed to {0}. Some UI will fully apply after restart.",
 
+            // v1.0.7: config persistence failures are no longer silent
+            ["bubble.save_failed_title"] = "Settings Not Saved",
+            ["bubble.save_failed"] = "The change took effect, but the config file could not be written (disk full or file in use). It may be lost after a restart.",
+            ["bubble.config_reset_title"] = "Settings Reset",
+            ["bubble.config_reset"] = "The config file could not be parsed. It has been backed up and default settings restored. Please re-enter your timeout values and hotkey.",
+
             // Tooltip (tray icon hover)
             ["tooltip.work"] = "Work · AC {0} / DC {1}",
             ["tooltip.away"] = "Away · AC {0} / DC {1}",
             ["tooltip.unknown"] = "Unknown · AC {0} / DC {1}",
+            // v1.0.7: shown while the startup powercfg read is still in flight.
+            ["tooltip.detecting"] = "Reading current system settings…",
 
             // Common values
             ["common.never"] = "Never",
@@ -202,14 +230,27 @@ public static class LocalizationService
         return string.Format(Get(key), args);
     }
 
+    /// <summary>
+    /// Built once: <see cref="SupportedLanguages"/> is enumerated by tests on every run and
+    /// every call used to allocate a fresh copy of the whole key list.
+    /// </summary>
+    private static readonly IReadOnlyCollection<string> CachedSupportedLanguages =
+        Translations.Keys.ToArray();
+
+    /// <summary>
+    /// Built once, same reason as <see cref="CachedSupportedLanguages"/>.
+    /// </summary>
+    private static readonly IReadOnlyCollection<string> CachedAllKeys =
+        Translations["zh-CN"].Keys.ToArray();
+
     /// <summary>Language codes this build ships translations for.</summary>
-    public static IReadOnlyCollection<string> SupportedLanguages => Translations.Keys.ToList();
+    public static IReadOnlyCollection<string> SupportedLanguages => CachedSupportedLanguages;
 
     /// <summary>
     /// Every translation key defined in the reference language (zh-CN).
     /// Used to verify no language is missing a key.
     /// </summary>
-    public static IReadOnlyCollection<string> AllKeys => Translations["zh-CN"].Keys.ToList();
+    public static IReadOnlyCollection<string> AllKeys => CachedAllKeys;
 
     /// <summary>
     /// Returns true when the given language defines <paramref name="key"/>.

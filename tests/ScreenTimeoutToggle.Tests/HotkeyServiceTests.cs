@@ -543,6 +543,11 @@ public class HotkeyServiceTests
     /// roll back atomically. Validation must now happen first, leaving the existing
     /// registration intact.
     /// </summary>
+    /// <remarks>
+    /// v1.0.7: the <c>return</c> on an unregisterable environment used to make this a
+    /// silent no-op — the test reported green while asserting nothing. It now skips
+    /// explicitly, with the reason recorded in the test output.
+    /// </remarks>
     [Theory]
     [InlineData("")]
     [InlineData("NotAKey")]
@@ -557,8 +562,7 @@ public class HotkeyServiceTests
             var registered = svc.Register(new HotkeyConfig { Modifiers = "Ctrl+Alt+Shift", Key = "F24" });
             if (!registered)
             {
-                // This environment cannot register thread hotkeys at all — nothing to assert.
-                return;
+                SkipTest(NoInteractiveDesktopReason);
             }
             Assert.True(svc.IsRegistered);
 
@@ -585,7 +589,7 @@ public class HotkeyServiceTests
         {
             if (!svc.Register(new HotkeyConfig { Modifiers = "Ctrl+Alt+Shift", Key = "F24" }))
             {
-                return; // environment cannot register thread hotkeys
+                SkipTest(NoInteractiveDesktopReason);
             }
 
             Assert.True(svc.Register(new HotkeyConfig { Modifiers = "Ctrl+Alt+Shift", Key = "F23" }));
@@ -595,6 +599,134 @@ public class HotkeyServiceTests
         {
             svc.Unregister();
         }
+    }
+
+    // ===== v1.0.7 =====
+
+    /// <summary>
+    /// v1.0.7: RegisterHotKey needs an interactive window station. When it is unavailable
+    /// the affected tests skip with this reason rather than passing without asserting.
+    /// </summary>
+    private const string NoInteractiveDesktopReason =
+        "This environment cannot register thread-level hotkeys (no interactive window " +
+        "station — typical of a service account or a headless CI agent).";
+
+    /// <summary>
+    /// Skips the running test, recording <paramref name="reason"/> in the test output.
+    /// </summary>
+    /// <param name="reason">Why the test cannot run here.</param>
+    /// <remarks>
+    /// xunit 2.9.0 documents <c>Assert.Skip</c> but does not ship it in
+    /// <c>xunit.assert</c>, so the exception it would have thrown is raised directly.
+    /// </remarks>
+    private static void SkipTest(string reason) => throw Xunit.Sdk.SkipException.ForSkip(reason);
+
+    /// <summary>
+    /// v1.0.7 (M6): "combination already in use" is far more common than "key name
+    /// invalid", yet it was the branch that tore the working hotkey down and left nothing
+    /// behind. Register must restore the previous combination when Windows refuses the new
+    /// one, instead of reporting a revert it did not perform.
+    /// </summary>
+    /// <remarks>
+    /// A thread-level hotkey (hwnd = <see cref="IntPtr.Zero"/>) is owned by the thread
+    /// that registered it and is released when that thread exits, so the blocking
+    /// registration has to happen on — and stay on — a separate thread for the refusal to
+    /// be reproducible.
+    /// </remarks>
+    [Fact]
+    public void Register_CombinationInUse_RestoresThePreviousRegistration()
+    {
+        var svc = new HotkeyService(IntPtr.Zero);
+
+        var blockerReady = new ManualResetEventSlim(false);
+        var releaseBlocker = new ManualResetEventSlim(false);
+        // bool[] rather than a captured local: the value is written on the blocker thread.
+        var blocked = new bool[1];
+
+        var blockerThread = new Thread(() =>
+        {
+            // Owns Ctrl+Alt+Shift+F23 for this thread only, for the life of the thread.
+            var blocker = new HotkeyService(IntPtr.Zero);
+            blocked[0] = blocker.Register(new HotkeyConfig { Modifiers = "Ctrl+Alt+Shift", Key = "F23" });
+            blockerReady.Set();
+            releaseBlocker.Wait();
+            blocker.Dispose();
+        })
+        { IsBackground = true };
+        blockerThread.SetApartmentState(ApartmentState.STA);
+        blockerThread.Start();
+
+        try
+        {
+            if (!blockerReady.Wait(TimeSpan.FromSeconds(10)))
+            {
+                SkipTest("The blocking thread did not start in time.");
+            }
+            if (!blocked[0])
+            {
+                SkipTest(NoInteractiveDesktopReason);
+            }
+            if (!svc.Register(new HotkeyConfig { Modifiers = "Ctrl+Alt+Shift", Key = "F24" }))
+            {
+                SkipTest(NoInteractiveDesktopReason);
+            }
+            Assert.True(svc.IsRegistered);
+
+            // The blocking thread owns this combination, so Windows must refuse it here.
+            var accepted = svc.Register(new HotkeyConfig { Modifiers = "Ctrl+Alt+Shift", Key = "F23" });
+
+            Assert.False(accepted, "expected RegisterHotKey to refuse a combination owned by another thread");
+            // The rollback is the point of the test: the previous hotkey is live again.
+            Assert.True(svc.IsRegistered,
+                "a refused hotkey change must restore the previous registration, not leave the app with none");
+        }
+        finally
+        {
+            releaseBlocker.Set();
+            blockerThread.Join(TimeSpan.FromSeconds(10));
+            svc.Unregister();
+        }
+    }
+
+    /// <summary>
+    /// v1.0.7 (M12): the service is IDisposable, so releasing the hotkey no longer depends
+    /// on every caller remembering to call Unregister() on every exit path.
+    /// </summary>
+    [Fact]
+    public void Dispose_ReleasesTheHotkey_AndIsIdempotent()
+    {
+        var svc = new HotkeyService(IntPtr.Zero);
+
+        if (!svc.Register(new HotkeyConfig { Modifiers = "Ctrl+Alt+Shift", Key = "F24" }))
+        {
+            SkipTest(NoInteractiveDesktopReason);
+        }
+        Assert.True(svc.IsRegistered);
+
+        svc.Dispose();
+        Assert.False(svc.IsRegistered);
+
+        // A second Dispose must not throw — Dispose is called from TrayApp.Dispose and
+        // from an exception path in the same run.
+        svc.Dispose();
+        Assert.False(svc.IsRegistered);
+    }
+
+    /// <summary>
+    /// v1.0.7 (M5): the service owns exactly one hotkey id. A WM_HOTKEY carrying any other
+    /// id must be ignored, and the id is no longer a caller-supplied parameter that could
+    /// disagree with the one WndProc recognises.
+    /// </summary>
+    [Fact]
+    public void Register_HasNoCustomIdParameter_ThatCouldDisagreeWithWndProc()
+    {
+        var register = typeof(HotkeyService).GetMethod(nameof(HotkeyService.Register));
+        var unregister = typeof(HotkeyService).GetMethod(nameof(HotkeyService.Unregister));
+
+        Assert.NotNull(register);
+        Assert.NotNull(unregister);
+        Assert.Single(register!.GetParameters());
+        Assert.Empty(unregister!.GetParameters());
     }
 
     /// <summary>
