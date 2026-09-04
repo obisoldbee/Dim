@@ -141,7 +141,14 @@ public class TrayApp : ApplicationContext
         };
         // spec §2.1(1): a single left click toggles — it used to be DoubleClick, so a
         // plain click did nothing.
-        _notify.Click += async (_, _) => await ToggleModeAsync();
+        // MouseClick, not Click: NotifyIcon.Click fires for ANY mouse button, so a
+        // right-click opening the context menu also toggled the mode. The button is
+        // checked explicitly so only a left click switches Work/Away.
+        _notify.MouseClick += async (_, e) =>
+        {
+            if (ShouldToggleOnClick(e.Button))
+                await ToggleModeAsync();
+        };
 
         BuildContextMenu();
         UpdateSwitchMenuItem();
@@ -211,6 +218,21 @@ public class TrayApp : ApplicationContext
             "_syncRoot must own a window handle, otherwise InvokeRequired always returns false and UI marshalling silently stops working.");
         return control;
     }
+
+    /// <summary>
+    /// Decides whether a tray-icon mouse click should toggle the Work/Away mode.
+    /// </summary>
+    /// <param name="button">The mouse button that was clicked.</param>
+    /// <returns><c>true</c> only for the left button.</returns>
+    /// <remarks>
+    /// Extracted as a pure function so the guard can be unit-tested without a
+    /// <see cref="NotifyIcon"/>. The bug this pins down: the tray used to subscribe to
+    /// <c>NotifyIcon.Click</c>, which fires for ANY mouse button — so pressing the right
+    /// button to open the context menu also toggled the mode. <c>MouseClick</c> plus
+    /// this check makes only a left click toggle; the right button just opens the menu.
+    /// Do NOT "simplify" this back to an unconditional toggle.
+    /// </remarks>
+    internal static bool ShouldToggleOnClick(MouseButtons button) => button == MouseButtons.Left;
 
     private void BuildContextMenu()
     {
