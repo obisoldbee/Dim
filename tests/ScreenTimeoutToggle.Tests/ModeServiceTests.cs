@@ -151,4 +151,54 @@ public class ModeServiceTests
         // Large values that don't match any config
         Assert.Equal(AppMode.Unknown, svc.MatchCurrentMode(4294967295L, 0L));
     }
+
+    // --- TimeoutsFor: the single mode→minutes resolution shared by SwitchTo,
+    // ReapplyCurrentMode and TrayApp's tooltip (it used to be three hand copies). ---
+
+    [Fact]
+    public void TimeoutsFor_Work_ReturnsWorkValues()
+    {
+        var svc = new ModeService(Cfg(), new Mock<PowerConfigService>().Object);
+
+        var (ac, dc) = svc.TimeoutsFor(AppMode.Work);
+
+        Assert.Equal(0, ac);
+        Assert.Equal(30, dc);
+    }
+
+    [Fact]
+    public void TimeoutsFor_Away_ReturnsAwayValues()
+    {
+        var svc = new ModeService(Cfg(), new Mock<PowerConfigService>().Object);
+
+        var (ac, dc) = svc.TimeoutsFor(AppMode.Away);
+
+        Assert.Equal(1, ac);
+        Assert.Equal(1, dc);
+    }
+
+    [Fact]
+    public void TimeoutsFor_FollowsUpdateConfig()
+    {
+        var svc = new ModeService(Cfg(), new Mock<PowerConfigService>().Object);
+        svc.UpdateConfig(Cfg() with
+        {
+            Away = new TimeoutConfig { AcMinutes = 7, DcMinutes = 9 }
+        });
+
+        var (ac, dc) = svc.TimeoutsFor(AppMode.Away);
+
+        Assert.Equal(7, ac);
+        Assert.Equal(9, dc);
+    }
+
+    [Fact]
+    public void TimeoutsFor_Unknown_Throws()
+    {
+        var svc = new ModeService(Cfg(), new Mock<PowerConfigService>().Object);
+
+        // Unknown has no timeout pair; substituting one would silently lie about
+        // which values a future caller would apply.
+        Assert.Throws<ArgumentException>(() => svc.TimeoutsFor(AppMode.Unknown));
+    }
 }

@@ -34,6 +34,27 @@ public class ModeService
     public void UpdateConfig(AppConfig newConfig) => _config = newConfig;
 
     /// <summary>
+    /// Returns the AC/DC timeout pair configured for a mode.
+    /// </summary>
+    /// <param name="mode">Mode to resolve timeouts for.</param>
+    /// <exception cref="ArgumentException">The mode is <see cref="AppMode.Unknown"/> —
+    /// no timeout pair is defined for it, and silently substituting one would be a lie.</exception>
+    /// <remarks>
+    /// The mode→minutes resolution used to exist as three hand-rolled copies
+    /// (here, in <see cref="ReapplyCurrentMode"/>, and in TrayApp's tooltip), which
+    /// is two chances for a future edit to update one and miss the others.
+    /// </remarks>
+    public (int AcMinutes, int DcMinutes) TimeoutsFor(AppMode mode)
+    {
+        if (mode == AppMode.Unknown)
+            throw new ArgumentException("No timeouts are configured for Unknown mode", nameof(mode));
+
+        return mode == AppMode.Work
+            ? (_config.Work.AcMinutes, _config.Work.DcMinutes)
+            : (_config.Away.AcMinutes, _config.Away.DcMinutes);
+    }
+
+    /// <summary>
     /// Switches to the target mode by applying its AC/DC timeout values via powercfg.
     /// </summary>
     public void SwitchTo(AppMode target)
@@ -41,9 +62,7 @@ public class ModeService
         if (target == AppMode.Unknown)
             throw new ArgumentException("Cannot switch to Unknown mode", nameof(target));
 
-        var (acMin, dcMin) = target == AppMode.Work
-            ? (_config.Work.AcMinutes, _config.Work.DcMinutes)
-            : (_config.Away.AcMinutes, _config.Away.DcMinutes);
+        var (acMin, dcMin) = TimeoutsFor(target);
 
         // No scheme parameter — PowerConfigService uses SCHEME_CURRENT internally
         _power.SetVideoIdle(acMin * 60, dcMin * 60);
@@ -72,9 +91,7 @@ public class ModeService
     public void ReapplyCurrentMode()
     {
         if (CurrentMode == AppMode.Unknown) return;
-        var (acMin, dcMin) = CurrentMode == AppMode.Work
-            ? (_config.Work.AcMinutes, _config.Work.DcMinutes)
-            : (_config.Away.AcMinutes, _config.Away.DcMinutes);
+        var (acMin, dcMin) = TimeoutsFor(CurrentMode);
 
         _power.SetVideoIdle(acMin * 60, dcMin * 60);
     }

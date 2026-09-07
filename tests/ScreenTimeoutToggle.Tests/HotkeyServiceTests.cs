@@ -107,6 +107,43 @@ public class HotkeyServiceTests
         Assert.Equal(expectedVk, HotkeyService.KeyStringToVk(key));
     }
 
+    // --- TryParseFunctionKeyNumber: the shared F1-F24 parser behind KeyStringToVk and
+    // SettingsForm.IsFunctionKey (it used to be a duplicated rule in each). ---
+
+    [Theory]
+    [InlineData("F1", 1)]
+    [InlineData("F2", 2)]
+    [InlineData("F9", 9)]
+    [InlineData("F10", 10)]
+    [InlineData("F13", 13)]
+    [InlineData("F19", 19)]
+    [InlineData("F24", 24)]
+    public void TryParseFunctionKeyNumber_AcceptsF1ToF24(string key, int expectedFn)
+    {
+        Assert.True(HotkeyService.TryParseFunctionKeyNumber(key, out var fn));
+        Assert.Equal(expectedFn, fn);
+    }
+
+    [Theory]
+    [InlineData("F0")]        // function keys start at F1
+    [InlineData("F25")]        // Keys enum stops at F24
+    [InlineData("F26")]
+    [InlineData("F99")]
+    [InlineData("F")]         // no digits at all
+    [InlineData("FA")]         // digit position is not a digit
+    [InlineData("F1A")]        // trailing junk
+    [InlineData("F123")]       // too long — F100+ are not keys
+    [InlineData("F+1")]        // sign is not a digit
+    [InlineData("F 1")]        // space is not a digit
+    [InlineData("")]           // empty
+    [InlineData("X1")]         // wrong letter
+    [InlineData("SPACE")]
+    [InlineData("F٥")]         // non-ASCII digit: never a Keys enum name, must not parse
+    public void TryParseFunctionKeyNumber_RejectsEverythingElse(string key)
+    {
+        Assert.False(HotkeyService.TryParseFunctionKeyNumber(key, out _));
+    }
+
     /// <summary>
     /// KeyStringToVk returns 0 for keys that cannot be used as a hotkey.
     /// v1.0.6: "Space"/"Tab"/"Enter" used to be listed here as invalid — that was the

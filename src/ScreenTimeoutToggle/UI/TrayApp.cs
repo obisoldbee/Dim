@@ -22,6 +22,13 @@ public class TrayApp : ApplicationContext
     private AppConfig _config;
 
     /// <summary>
+    /// The "Switch to Work/Away" menu item, cached at build time. UpdateSwitchMenuItem
+    /// runs on every mode change; a name-based <c>Items["switchItem"]</c> lookup made
+    /// each refresh cost a string hash and a collection walk for a control we created.
+    /// </summary>
+    private ToolStripMenuItem _switchItem = null!;
+
+    /// <summary>
     /// v1.0.7: the three mode icons were byte-identical (all four .ico files are the same
     /// unified OB Dim mark — a deliberate branding decision). Keeping three embedded
     /// copies and three loads around would have been pure dead weight, so there is one
@@ -237,14 +244,14 @@ public class TrayApp : ApplicationContext
     private void BuildContextMenu()
     {
         var menu = new ContextMenuStrip();
-        var switchItem = new ToolStripMenuItem(LocalizationService.Get("menu.switch_to_away"), null, async (_, _) => await ToggleModeAsync())
+        _switchItem = new ToolStripMenuItem(LocalizationService.Get("menu.switch_to_away"), null, async (_, _) => await ToggleModeAsync())
         {
             Name = "switchItem"
         };
         var settingsItem = new ToolStripMenuItem(LocalizationService.Get("menu.settings"), null, (_, _) => OpenSettings());
         var exitItem = new ToolStripMenuItem(LocalizationService.Get("menu.exit"), null, (_, _) => ExitApp());
 
-        menu.Items.AddRange(new ToolStripItem[] { switchItem, settingsItem, new ToolStripSeparator(), exitItem });
+        menu.Items.AddRange(new ToolStripItem[] { _switchItem, settingsItem, new ToolStripSeparator(), exitItem });
         _notify.ContextMenuStrip = menu;
     }
 
@@ -297,6 +304,25 @@ public class TrayApp : ApplicationContext
     }
 
     /// <summary>
+    /// Runs an action on the UI thread, in place when the caller is already there.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="NotifyIcon"/> is not a <see cref="Control"/>, so <see cref="_syncRoot"/>
+    /// is the marshalling vehicle. This pattern used to exist as three hand copies
+    /// (startup refresh, mode change, bubbles) — a fix applied to one silently missed
+    /// the other two.
+    /// </remarks>
+    private void RunOnUi(Action action)
+    {
+        if (_disposed) return;
+
+        if (_syncRoot.InvokeRequired)
+            _syncRoot.BeginInvoke(action);
+        else
+            action();
+    }
+
+    /// <summary>
     /// Applies the resolved startup mode to the tray, marshalling back to the UI thread.
     /// No balloon: nothing changed from the user's point of view, we only just found out
     /// what the system was already doing.
@@ -304,12 +330,7 @@ public class TrayApp : ApplicationContext
     /// <param name="mode">Mode resolved from the system.</param>
     private void RefreshStartupModeUI(AppMode mode)
     {
-        if (_disposed) return;
-
-        if (_syncRoot.InvokeRequired)
-            _syncRoot.BeginInvoke(() => ApplyStartupModeUI(mode));
-        else
-            ApplyStartupModeUI(mode);
+        RunOnUi(() => ApplyStartupModeUI(mode));
     }
 
     private void ApplyStartupModeUI(AppMode mode)
@@ -469,16 +490,7 @@ public class TrayApp : ApplicationContext
     /// </summary>
     private void OnModeChanged(object? sender, AppMode mode)
     {
-        if (_disposed) return;
-
-        if (_syncRoot.InvokeRequired)
-        {
-            _syncRoot.BeginInvoke(() => UpdateModeUI(mode));
-        }
-        else
-        {
-            UpdateModeUI(mode);
-        }
+        RunOnUi(() => UpdateModeUI(mode));
     }
 
     private void UpdateModeUI(AppMode mode)
@@ -497,12 +509,9 @@ public class TrayApp : ApplicationContext
 
     private void UpdateSwitchMenuItem()
     {
-        if (_notify.ContextMenuStrip?.Items["switchItem"] is ToolStripMenuItem item)
-        {
-            item.Text = _modeSvc.CurrentMode == AppMode.Work
-                ? LocalizationService.Get("menu.switch_to_away")
-                : LocalizationService.Get("menu.switch_to_work");
-        }
+        _switchItem.Text = _modeSvc.CurrentMode == AppMode.Work
+            ? LocalizationService.Get("menu.switch_to_away")
+            : LocalizationService.Get("menu.switch_to_work");
     }
 
     private void OpenSettings()
@@ -694,16 +703,7 @@ public class TrayApp : ApplicationContext
     /// <param name="icon">Balloon icon.</param>
     private void ShowBubbleAsync(string title, string text, ToolTipIcon icon)
     {
-        if (_disposed) return;
-
-        if (_syncRoot.InvokeRequired)
-        {
-            _syncRoot.BeginInvoke(() => ShowBubble(title, text, icon));
-        }
-        else
-        {
-            ShowBubble(title, text, icon);
-        }
+        RunOnUi(() => ShowBubble(title, text, icon));
     }
 
     private void ExitApp()
@@ -743,9 +743,11 @@ public class TrayApp : ApplicationContext
             return FormatTooltip("tooltip.unknown", SecondsToMinutes(acSeconds), SecondsToMinutes(dcSeconds));
         }
 
-        var (acMin, dcMin) = mode == AppMode.Away
-            ? (_config.Away.AcMinutes, _config.Away.DcMinutes)
-            : (_config.Work.AcMinutes, _config.Work.DcMinutes);
+        // ModeService holds the same timeout values TrayApp._config does (they are kept
+        // in sync by UpdateConfig on every settings save, and a mode switch changes
+        // only CurrentMode), so the single resolution lives in ModeService.TimeoutsFor
+        // instead of a fourth hand-rolled copy here.
+        var (acMin, dcMin) = _modeSvc.TimeoutsFor(mode);
         var tooltipKey = mode switch
         {
             AppMode.Work => "tooltip.work",

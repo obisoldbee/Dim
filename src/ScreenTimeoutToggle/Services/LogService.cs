@@ -39,22 +39,51 @@ public static class LogService
     private static readonly object Sync = new();
 
     /// <summary>
+    /// Directory already confirmed to exist for the current <see cref="LogPath"/>; null
+    /// until the first write confirms it. <see cref="Log"/> runs on every log line and
+    /// <see cref="Directory.CreateDirectory"/> is a syscall each time — the cache drops
+    /// it to zero for the steady state.
+    /// </summary>
+    private static string? _ensuredDir;
+
+    /// <summary>
+    /// Creates the log directory once per path, using the <see cref="_ensuredDir"/> cache.
+    /// Benignly racy: two threads may both create the same directory, which is idempotent.
+    /// </summary>
+    private static void EnsureLogDirectory()
+    {
+        var dir = Path.GetDirectoryName(LogPath);
+        if (string.IsNullOrEmpty(dir) || dir == _ensuredDir) return;
+        Directory.CreateDirectory(dir);
+        _ensuredDir = dir;
+    }
+
+    /// <summary>
     /// Writes a single log line with timestamp and level.
     /// </summary>
     public static void Log(string level, string message)
     {
         try
         {
-            var dir = Path.GetDirectoryName(LogPath);
-            if (!string.IsNullOrEmpty(dir))
-                Directory.CreateDirectory(dir);
-
             var line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [{level}] {message}{Environment.NewLine}";
 
             lock (Sync)
             {
+                EnsureLogDirectory();
                 TrimIfNeeded();
-                File.AppendAllText(LogPath, line);
+                try
+                {
+                    File.AppendAllText(LogPath, line);
+                }
+                catch (DirectoryNotFoundException) when (_ensuredDir != null)
+                {
+                    // Stale cache: the directory was deleted while the app was running.
+                    // Drop the cache, recreate, and try once more — this is the one
+                    // failure the cache itself can cause, so the cache also owns its repair.
+                    _ensuredDir = null;
+                    EnsureLogDirectory();
+                    File.AppendAllText(LogPath, line);
+                }
             }
         }
         catch
@@ -89,9 +118,11 @@ public static class LogService
     {
         try
         {
-            if (!File.Exists(LogPath)) return;
+            // One metadata stat instead of File.Exists + FileInfo (which was two):
+            // this check runs on every log line, and until the file actually exceeds
+            // MaxLogSize the stat is the only cost.
             var info = new FileInfo(LogPath);
-            if (info.Length <= MaxLogSize) return;
+            if (!info.Exists || info.Length <= MaxLogSize) return;
             if (info.Length <= TrimKeepSize) return;
 
             byte[] trimmed;

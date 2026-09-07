@@ -1,5 +1,3 @@
-#pragma warning disable CS8618 // WinForms controls initialized in BuildUi, not constructor
-
 using OBDim.Models;
 using OBDim.Services;
 
@@ -8,26 +6,32 @@ namespace OBDim.UI;
 /// <summary>
 /// Settings dialog: 4 timeout values + hotkey capture + autostart toggle + language selector.
 /// </summary>
+/// <remarks>
+/// WinForms controls are created in <see cref="BuildUi"/>, not the constructor, so their
+/// fields carry <c>null!</c> initializers (precise per-field suppression) instead of a
+/// file-wide <c>#pragma warning disable CS8618</c> that also hid real nullable issues.
+/// </remarks>
 public class SettingsForm : Form
 {
     private readonly AppConfig _initial;
     private readonly HotkeyService _hotkeySvc;
     private readonly AutoStartService _autoStartSvc;
 
-    private NumericUpDown _workAc;
-    private NumericUpDown _workDc;
-    private NumericUpDown _awayAc;
-    private NumericUpDown _awayDc;
-    private TextBox _hotkeyBox;
-    private CheckBox _autoStartCheck;
-    private ComboBox _languageBox;
-    private Button _okBtn;
-    private Button _cancelBtn;
+    private NumericUpDown _workAc = null!;
+    private NumericUpDown _workDc = null!;
+    private NumericUpDown _awayAc = null!;
+    private NumericUpDown _awayDc = null!;
+    private TextBox _hotkeyBox = null!;
+    private CheckBox _autoStartCheck = null!;
+    private ComboBox _languageBox = null!;
+    private Button _okBtn = null!;
+    private Button _cancelBtn = null!;
     private readonly ToolTip _toolTip;
 
     private HotkeyConfig _capturedHotkey;
 
-    public AppConfig Result { get; private set; }
+    /// <summary>Only meaningful after <see cref="DialogResult"/> is OK (set in OnOkClick).</summary>
+    public AppConfig Result { get; private set; } = null!;
 
     public SettingsForm(AppConfig initial, HotkeyService hotkeySvc, AutoStartService autoStartSvc)
     {
@@ -189,13 +193,19 @@ public class SettingsForm : Form
     /// as a single-key hotkey (no modifier needed). Includes F1-F24, PrintScreen,
     /// Pause, ScrollLock, NumLock, and CapsLock.
     /// </summary>
-    private static bool IsFunctionKey(string key)
+    /// <remarks>
+    /// internal (not private) so it is unit-testable without instantiating WinForms
+    /// controls. F1-F24 goes through the shared HotkeyService parser — this method and
+    /// <see cref="HotkeyService.KeyStringToVk"/> used to each carry their own copy of the
+    /// F-key rules, and they could drift apart.
+    /// </remarks>
+    internal static bool IsFunctionKey(string key)
     {
         if (string.IsNullOrWhiteSpace(key)) return false;
         key = key.Trim().ToUpperInvariant();
 
-        // F1-F24
-        if (key.StartsWith('F') && int.TryParse(key[1..], out int fn) && fn is >= 1 and <= 24)
+        // F1-F24 — shared parser, no drift
+        if (HotkeyService.TryParseFunctionKeyNumber(key, out _))
             return true;
 
         // Named function keys (match both Keys enum names and common aliases)
@@ -224,5 +234,3 @@ public class SettingsForm : Form
         DialogResult = DialogResult.OK;
     }
 }
-
-#pragma warning restore CS8618

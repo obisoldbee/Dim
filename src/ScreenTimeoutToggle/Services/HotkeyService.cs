@@ -412,6 +412,49 @@ public class HotkeyService : IDisposable
         };
 
     /// <summary>
+    /// Parses an F-key name ("F1"…"F24") without allocating a substring.
+    /// </summary>
+    /// <param name="key">Key name; expected already trimmed and upper-cased by the caller.</param>
+    /// <param name="fn">Receives the function-key number (1–24) when the name is valid.</param>
+    /// <returns>True when <paramref name="key"/> names a function key F1–F24.</returns>
+    /// <remarks>
+    /// Shared by <see cref="KeyStringToVk"/> and <c>SettingsForm.IsFunctionKey</c> so the
+    /// two cannot drift apart again (they each used to carry their own copy of
+    /// <c>key.StartsWith('F') &amp;&amp; int.TryParse(key[1..], …)</c>). ASCII digits only:
+    /// the <c>Keys</c> enum names this must match are ASCII, and <c>int.TryParse</c> under
+    /// some cultures happily accepts non-ASCII digit characters that could never be a VK.
+    /// </remarks>
+    internal static bool TryParseFunctionKeyNumber(string key, out int fn)
+    {
+        // F1..F24 is 2–3 characters: 'F' followed by one or two ASCII digits.
+        if (key.Length is < 2 or > 3 || key[0] != 'F')
+        {
+            fn = 0;
+            return false;
+        }
+
+        int value = 0;
+        for (int i = 1; i < key.Length; i++)
+        {
+            if (key[i] is < '0' or > '9')
+            {
+                fn = 0;
+                return false;
+            }
+            value = value * 10 + (key[i] - '0');
+        }
+
+        if (value is < 1 or > 24)
+        {
+            fn = 0;
+            return false;
+        }
+
+        fn = value;
+        return true;
+    }
+
+    /// <summary>
     /// Converts a key string (e.g., "S", "F5", "1", "PrintScreen") to a Win32 virtual-key code.
     /// Returns 0 for unrecognized keys.
     /// </summary>
@@ -426,8 +469,8 @@ public class HotkeyService : IDisposable
             short vks = VkKeyScan(key[0]);
             if (vks != -1) return (uint)(vks & 0xFF);
         }
-        // F1-F24
-        if (key.StartsWith('F') && int.TryParse(key[1..], out int fn) && fn is >= 1 and <= 24)
+        // F1-F24 (shared parser — see TryParseFunctionKeyNumber)
+        if (TryParseFunctionKeyNumber(key, out int fn))
             return (uint)(0x6F + fn); // F1=0x70
         // Named keys (PrintScreen, Pause, ScrollLock, etc.)
         if (NamedKeys.TryGetValue(key, out uint namedVk))
