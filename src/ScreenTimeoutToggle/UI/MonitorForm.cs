@@ -612,23 +612,18 @@ public sealed class MonitorForm : Form
             foreach (var window in bucket.Windows)
             {
                 // Row identity per provider, mirroring the reference semantics:
-                // Codex rows are "桶名 [窗口]"（Codex [每周]）; MiniMax primary model shows
-                // windows as titles, secondary models show the model as title; Ark rows are
-                // pure windows (the card header carries the plan).
-                var rowBadge = state.Provider switch
-                {
-                    ProviderId.Codex => WindowTitle(window),
-                    // MiniMax secondary models: "视频赠送 [当前周期]" — model as title,
-                    // window as badge; the primary model's rows need no badge.
-                    ProviderId.MiniMax when IsMiniMaxSecondaryModel(bucket) => WindowTitle(window),
-                    _ => "",
-                };
+                // Codex rows are "Codex · 每周" (bucket · window); MiniMax primary model
+                // shows windows as titles (当前周期/每周), secondary models as
+                // "视频赠送 · 当前周期"; Ark rows are pure windows. The window tag is
+                // merged into the TITLE TEXT so AutoEllipsis governs crowding — a pill
+                // control between title and percent cannot fit at every width/DPI.
+                var windowTag = WindowTitle(window);
                 var rowTitle = state.Provider switch
                 {
-                    ProviderId.Codex => ShortName(bucket.DisplayName ?? bucket.SourceKey, 12),
+                    ProviderId.Codex => $"{ShortName(bucket.DisplayName ?? bucket.SourceKey, 10)} · {windowTag}",
                     ProviderId.MiniMax when IsMiniMaxSecondaryModel(bucket) =>
-                        MiniMaxModelDisplay(bucket),
-                    _ => WindowTitle(window),
+                        $"{MiniMaxModelDisplay(bucket)} · {windowTag}",
+                    _ => windowTag,
                 };
 
                 double? fraction = null;
@@ -674,7 +669,7 @@ public sealed class MonitorForm : Form
                 }
 
                 // MiniMax-style absolute counts replace the percent text when present
-                // ("已用 0 / 3 次"); the remaining bar still shows the headroom.
+                // ("已用 0/3 次"); the remaining bar still shows the headroom.
                 if (state.Provider == ProviderId.MiniMax &&
                     window.UsedText is not null && window.TotalText is not null && !window.IsUnlimited)
                 {
@@ -683,7 +678,7 @@ public sealed class MonitorForm : Form
 
                 AddRow(rowsPanel,
                     rowTitle,
-                    rowBadge,
+                    "",
                     percentText,
                     fraction,
                     barColor,
@@ -694,27 +689,30 @@ public sealed class MonitorForm : Form
 
         if (snapshot.ResetCredits is { } credits)
         {
-            // Reference-style credits row: "Full reset [重置权益] 可用 3 次" with the
-            // NEXT expiry on the right, then one readable bullet line per credit.
+            // Reference interaction: "Full reset [重置权益] 可用 3 次 ›" — the NEXT expiry
+            // is always visible on the right, per-credit expiry lines are COLLAPSED until
+            // the row is clicked. Expanded, EVERY credit gets a line so the count and the
+            // list always agree.
             var nextExpiry = credits.Details?
                 .Where(c => c.ExpiresAtUtc.HasValue)
                 .OrderBy(c => c.ExpiresAtUtc)
                 .FirstOrDefault();
-            AddRow(rowsPanel,
+            var chevron = _creditsExpanded ? " ⌄" : " ›";
+            var creditsRow = AddRow(rowsPanel,
                 credits.Details is { Count: > 0 } ? credits.Details[0].Title : L("monitor.badge.reset_credit"),
                 L("monitor.badge.reset_credit"),
-                L("monitor.reset_credits_count", credits.AvailableCount),
+                L("monitor.reset_credits_count", credits.AvailableCount) + chevron,
                 null, null,
                 nextExpiry?.ExpiresAtUtc is { } exp ? $"{exp.ToLocalTime():M/d HH:mm} " + L("monitor.credit_expiry_suffix") : "—",
                 dimmed);
 
             if (credits.Details is null)
             {
-                AddNoteRow(rowsPanel, L("monitor.reset_credits_count_only"));
+                if (_creditsExpanded) AddNoteRow(rowsPanel, L("monitor.reset_credits_count_only"));
             }
-            else if (credits.Details.Count > 1)
+            else if (_creditsExpanded)
             {
-                foreach (var credit in credits.Details.Skip(1))
+                foreach (var credit in credits.Details)
                 {
                     var line = credit.Title;
                     if (credit.ExpiresAtUtc is { } expires)
@@ -728,9 +726,40 @@ public sealed class MonitorForm : Form
                     AddNoteRow(rowsPanel, "• " + line);
                 }
             }
+
+            // The whole row is the toggle target (labels swallow clicks otherwise).
+            MakeClickable(creditsRow, () =>
+            {
+                _creditsExpanded = !_creditsExpanded;
+                UpdateQuotaView();
+            });
         }
 
         SizeCard(card, rowsPanel);
+    }
+
+    /// <summary>Expands/collapses the reset-credit expiry details; survives refreshes within the session.</summary>
+    internal bool CreditsExpanded
+    {
+        get => _creditsExpanded;
+        set
+        {
+            _creditsExpanded = value;
+            UpdateQuotaView();
+        }
+    }
+
+    private bool _creditsExpanded;
+
+    private static void MakeClickable(Control row, Action onClick)
+    {
+        row.Cursor = Cursors.Hand;
+        row.Click += (_, _) => onClick();
+        foreach (Control child in row.Controls)
+        {
+            child.Cursor = Cursors.Hand;
+            child.Click += (_, _) => onClick();
+        }
     }
 
     private static void AddNoteRow(FlowLayoutPanel rowsPanel, string text)
@@ -796,7 +825,7 @@ public sealed class MonitorForm : Form
     /// middle column, reset time right-aligned, and a full-width bar underneath.
     /// Widths derive from the row panel — no fixed pixel math.
     /// </summary>
-    private void AddRow(FlowLayoutPanel rowsPanel, string title, string badge, string? percentText,
+    private Control AddRow(FlowLayoutPanel rowsPanel, string title, string badge, string? percentText,
         double? fraction, Color? barColor, string? rightText, bool dimmed, string? note = null)
     {
         var w = Math.Max(200, rowsPanel.Width - 4);
@@ -810,27 +839,24 @@ public sealed class MonitorForm : Form
 
         var fore = dimmed ? TextSecondary : SystemColors.ControlText;
 
+        // PROPORTIONAL column budget (fractions of the row width) — fixed pixel columns
+        // desync from scaled fonts at 150% DPI and crowd/clip each other.
+        // title 0..0.40w | percent 0.44w..0.72w | reset 0.73w..w | bar under percent.
+        var titleW = (int)(w * 0.38);
+        var percentX = (int)(w * 0.42);
+        var percentW = (int)(w * 0.26);
+        var rightX = (int)(w * 0.70);
+
         var titleLabel = new Label
         {
             Text = title,
             AutoSize = false,
             AutoEllipsis = true,
             Location = new Point(0, 0),
-            Size = new Size(150, 20),
+            Size = new Size(titleW, 20),
             ForeColor = fore,
         };
         row.Controls.Add(titleLabel);
-
-        if (badge.Length > 0)
-        {
-            var badgeLabel = new BadgeLabel
-            {
-                Text = badge,
-                Location = new Point(Math.Min(titleLabel.PreferredWidth + 4, Math.Max(0, w - 100)), 2),
-                ForeColor = dimmed ? fore : Color.FromArgb(99, 99, 104),
-            };
-            row.Controls.Add(badgeLabel);
-        }
 
         if (percentText is not null)
         {
@@ -839,8 +865,8 @@ public sealed class MonitorForm : Form
                 Text = percentText,
                 AutoSize = false,
                 AutoEllipsis = true,
-                Size = new Size(Math.Max(60, w - 154 - 108), 20),
-                Location = new Point(154, 0),
+                Size = new Size(Math.Max(60, percentW), 20),
+                Location = new Point(percentX, 0),
                 ForeColor = fore,
             };
             row.Controls.Add(percentLabel);
@@ -852,8 +878,8 @@ public sealed class MonitorForm : Form
             AutoSize = false,
             AutoEllipsis = true,
             TextAlign = ContentAlignment.MiddleRight,
-            Size = new Size(104, 20),
-            Location = new Point(w - 104, 0),
+            Size = new Size(w - rightX - 2, 20),
+            Location = new Point(rightX, 0),
             ForeColor = dimmed ? fore : TextSecondary,
             Font = new Font(Font.FontFamily, 8F),
         };
@@ -867,8 +893,8 @@ public sealed class MonitorForm : Form
             {
                 Fraction = f,
                 FillColor = color,
-                Size = new Size(Math.Max(40, w - 154 - 12), 6),
-                Location = new Point(154, 23),
+                Size = new Size(Math.Max(40, w - percentX - 10), 6),
+                Location = new Point(percentX, 23),
                 BackColor = Color.White,
             };
             row.Controls.Add(bar);
@@ -896,6 +922,7 @@ public sealed class MonitorForm : Form
         }
 
         rowsPanel.Controls.Add(row);
+        return row;
     }
 
     private void SizeCard(Panel card, FlowLayoutPanel rowsPanel)
@@ -915,10 +942,10 @@ public sealed class MonitorForm : Form
         {
             return LocalizationService.Get("monitor.reset_pending");
         }
-        // 像参照一样：一天内用倒计时，更远用绝对时间。
+        // 像参照一样：一天内用倒计时，更远用绝对时间（无空格拼接，右列窄也能放下）。
         if (remaining <= TimeSpan.FromHours(24))
         {
-            return FormatCountdown(remaining) + " " + LocalizationService.Get("monitor.reset_in");
+            return FormatCountdown(remaining) + LocalizationService.Get("monitor.reset_in");
         }
         return $"{local:M/d HH:mm} " + LocalizationService.Get("monitor.reset_suffix");
     }

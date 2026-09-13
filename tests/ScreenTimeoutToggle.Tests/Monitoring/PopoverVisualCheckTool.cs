@@ -79,6 +79,7 @@ public class PopoverVisualCheckTool
                         [
                             new ResetCredit { Title = "Full reset", Status = "available", ExpiresAtUtc = now.AddDays(8) },
                             new ResetCredit { Title = "Full reset", Status = "available", ExpiresAtUtc = now.AddDays(21) },
+                            new ResetCredit { Title = "Full reset", Status = "available", ExpiresAtUtc = now.AddDays(32) },
                         ],
                     },
                 };
@@ -176,6 +177,11 @@ public class PopoverVisualCheckTool
                 System.Threading.Thread.Sleep(300);
 
                 Capture(form, Path.Combine(outDir, "quota.png"));
+                form.CreditsExpanded = true;
+                Application.DoEvents();
+                System.Threading.Thread.Sleep(200);
+                Capture(form, Path.Combine(outDir, "quota-expanded.png"));
+                form.CreditsExpanded = false;
                 form.SetView(MonitorForm.View.Memory);
                 Application.DoEvents();
                 System.Threading.Thread.Sleep(300);
