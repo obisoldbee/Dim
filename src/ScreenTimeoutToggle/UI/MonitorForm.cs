@@ -56,6 +56,16 @@ public sealed class MonitorForm : Form
     private readonly Dictionary<ProviderId, Label> _cardStates = [];
     private readonly Dictionary<ProviderId, FlowLayoutPanel> _cardRows = [];
 
+    // Incremental card updates: the rendered row STATE (signature) decides between an
+    // in-place text/brush refresh (cheap, no control churn) and a structural rebuild.
+    // Rebuilding dozens of controls per event was what made every interaction stall.
+    private sealed record RowDesc(
+        string Title, string Percent, double? Fraction, Color? BarColor,
+        string Right, bool Dimmed, string? Note, bool Clickable = false);
+
+    private readonly Dictionary<ProviderId, string> _cardSignatures = [];
+    private readonly Dictionary<ProviderId, List<Control>> _cardRowControls = [];
+
     private static readonly Color[] ProviderDotColors =
     [
         Color.FromArgb(24, 24, 27),      // Codex
@@ -499,12 +509,21 @@ public sealed class MonitorForm : Form
         }
     }
 
+    /// <summary>
+    /// Coalesces coordinator events: several may fire within one UI cycle (three
+    /// providers finishing together), and each one previously triggered a FULL rebuild of
+    /// every card — the direct cause of the multi-second stalls on click/tab switches.
+    /// </summary>
+    private bool _pendingUiRefresh;
+
     private void OnCoordinatorChanged()
     {
-        if (IsDisposed) return;
+        if (IsDisposed || !IsHandleCreated || _pendingUiRefresh) return;
+        _pendingUiRefresh = true;
         BeginInvoke(() =>
         {
             if (IsDisposed) return;
+            _pendingUiRefresh = false;
             UpdateQuotaView();
             if (_currentView == View.Memory) UpdateMemoryView();
         });
@@ -513,8 +532,7 @@ public sealed class MonitorForm : Form
     private void OnReminderFired(QuotaReminderEvent evt)
     {
         // Reminders surface as tray balloons (owned by TrayApp); the panel just refreshes.
-        if (IsDisposed) return;
-        BeginInvoke(UpdateQuotaView);
+        OnCoordinatorChanged();
     }
 
     private void UpdateQuotaView()
@@ -523,7 +541,7 @@ public sealed class MonitorForm : Form
         var cardWidth = Math.Max(200, _quotaView.ClientSize.Width - 24);
         foreach (var id in Enum.GetValues<ProviderId>())
         {
-            if (_cards.TryGetValue(id, out var card)) card.Width = cardWidth;
+            if (_cards.TryGetValue(id, out var card) && card.Width != cardWidth) card.Width = cardWidth;
         }
         foreach (var state in _coordinator.GetDisplayStates())
         {
@@ -557,185 +575,241 @@ public sealed class MonitorForm : Form
         statusBits.AddRange(parts);
         statusLabel.Text = statusBits.Count == 0 ? L("monitor.state_no_data_yet") : string.Join(" · ", statusBits);
         statusLabel.ForeColor = hasFailure ? BarRed : TextSecondary;
-        statusLabel.MaximumSize = new Size(card.Width - 28, 0);
+        var maxStatus = new Size(card.Width - 28, 0);
+        if (statusLabel.MaximumSize != maxStatus) statusLabel.MaximumSize = maxStatus;
 
         // Rows start below the (possibly wrapping) status line — never at a fixed offset.
-        rowsPanel.Location = new Point(2, statusLabel.Bottom + 6);
-        rowsPanel.Width = card.Width - 34;
+        // Assignments are guarded: each one triggers a full nested layout pass.
+        var rowsY = statusLabel.Bottom + 6;
+        if (rowsPanel.Location != new Point(2, rowsY)) rowsPanel.Location = new Point(2, rowsY);
+        if (rowsPanel.Width != card.Width - 34) rowsPanel.Width = card.Width - 34;
 
         badge.Text = snapshot?.Buckets.FirstOrDefault(b => b.Tier is not null)?.Tier ?? "";
         badge.Visible = badge.Text.Length > 0;
         badge.FitToText();
         badge.Left = title.Left + title.PreferredWidth + 8;
 
-        ClearRows(rowsPanel);
-
         var dimmed = state.Stale || hasFailure;
+
+        // Build the row DESCRIPTORS first; the signature decides between an in-place
+        // refresh and a structural rebuild (see RowDesc note).
+        var rows = new List<RowDesc>();
 
         if (!state.Enabled)
         {
-            AddRow(rowsPanel, L("monitor.state_disabled_hint"), "", null, null, null, null, dimmed: true);
-            SizeCard(card, rowsPanel);
-            return;
+            rows.Add(new RowDesc(L("monitor.state_disabled_hint"), "", null, null, "", true, null));
         }
-
-        if (snapshot is null)
+        else if (snapshot is null)
         {
-            AddRow(rowsPanel,
+            rows.Add(new RowDesc(
                 hasFailure ? L(ErrorKeyFor(state.LastAttempt!.Error)) : L("monitor.state_no_data_yet"),
-                "", null, null, null, null, dimmed: true);
-            SizeCard(card, rowsPanel);
-            return;
+                "", null, null, "", true, null));
         }
-
-        foreach (var bucket in snapshot.Buckets)
+        else
         {
-            if (bucket.Error is not null)
+            foreach (var bucket in snapshot.Buckets)
             {
-                AddRow(rowsPanel, bucket.DisplayName ?? bucket.SourceKey, "", null, null, null,
-                    null, dimmed: true, note: L("monitor.bucket_error"));
-                continue;
-            }
-            if (bucket.Subscribed == false)
-            {
-                AddRow(rowsPanel, bucket.DisplayName ?? bucket.SourceKey, L("monitor.no_subscription"),
-                    null, null, null, null, dimmed: true);
-                continue;
-            }
-            if (bucket.Windows.Count == 0)
-            {
-                AddRow(rowsPanel, bucket.DisplayName ?? bucket.SourceKey, L("monitor.not_returned"),
-                    null, null, null, null, dimmed: true);
-                continue;
-            }
-
-            foreach (var window in bucket.Windows)
-            {
-                // Row identity per provider, mirroring the reference semantics:
-                // Codex rows are "Codex · 每周" (bucket · window); MiniMax primary model
-                // shows windows as titles (当前周期/每周), secondary models as
-                // "视频赠送 · 当前周期"; Ark rows are pure windows. The window tag is
-                // merged into the TITLE TEXT so AutoEllipsis governs crowding — a pill
-                // control between title and percent cannot fit at every width/DPI.
-                var windowTag = WindowTitle(window);
-                var rowTitle = state.Provider switch
+                if (bucket.Error is not null)
                 {
-                    ProviderId.Codex => $"{ShortName(bucket.DisplayName ?? bucket.SourceKey, 10)} · {windowTag}",
-                    ProviderId.MiniMax when IsMiniMaxSecondaryModel(bucket) =>
-                        $"{MiniMaxModelDisplay(bucket)} · {windowTag}",
-                    _ => windowTag,
-                };
-
-                double? fraction = null;
-                Color? barColor = null;
-                var percentText = "";
-
-                if (window.IsUnlimited)
-                {
-                    percentText = L("monitor.unlimited");
+                    rows.Add(new RowDesc(bucket.DisplayName ?? bucket.SourceKey, "", null, null,
+                        "", true, L("monitor.bucket_error")));
+                    continue;
                 }
-                else if (!window.HasAnyQuotaField)
+                if (bucket.Subscribed == false)
                 {
-                    percentText = L("monitor.not_provided");
+                    rows.Add(new RowDesc(bucket.DisplayName ?? bucket.SourceKey, L("monitor.no_subscription"),
+                        null, null, "", true, null));
+                    continue;
                 }
-                else if (window.PercentOutOfRange || window.UsedPercent is < 0 or > 100)
+                if (bucket.Windows.Count == 0)
                 {
-                    percentText = L("monitor.percent_out_of_range",
-                        FormatPercent((window.UsedPercent ?? window.RemainingPercent) ?? 0));
+                    rows.Add(new RowDesc(bucket.DisplayName ?? bucket.SourceKey, L("monitor.not_returned"),
+                        null, null, "", true, null));
+                    continue;
                 }
-                else
+
+                foreach (var window in bucket.Windows)
                 {
-                    // Bar fill follows the DISPLAYED direction (used for MiniMax/Ark,
-                    // remaining for Codex); the COLOR always grades by remaining, which is
-                    // the number the reminder thresholds speak.
-                    var remaining = window.RemainingPercent ?? 0;
-                    barColor = remaining switch
+                    // Row identity per provider, mirroring the reference semantics:
+                    // Codex rows are "Codex · 每周" (bucket · window); MiniMax primary model
+                    // shows windows as titles (当前周期/每周), secondary models as
+                    // "视频赠送 · 当前周期"; Ark rows are pure windows. The window tag is
+                    // merged into the TITLE TEXT so AutoEllipsis governs crowding — a pill
+                    // control between title and percent cannot fit at every width/DPI.
+                    var windowTag = WindowTitle(window);
+                    var rowTitle = state.Provider switch
                     {
-                        <= ReminderEvaluator.Level2RemainingPercent => BarRed,
-                        <= ReminderEvaluator.Level1RemainingPercent => BarAmber,
-                        _ => BarGreen,
+                        ProviderId.Codex => $"{ShortName(bucket.DisplayName ?? bucket.SourceKey, 10)} · {windowTag}",
+                        ProviderId.MiniMax when IsMiniMaxSecondaryModel(bucket) =>
+                            $"{MiniMaxModelDisplay(bucket)} · {windowTag}",
+                        _ => windowTag,
                     };
 
-                    if (window.DisplayAsUsed && window.UsedPercent is { } used)
-                    {
-                        percentText = L("monitor.percent_used_only", FormatPercent(used));
-                        fraction = Math.Clamp(used / 100.0, 0, 1);
-                    }
-                    else if (window.RemainingPercent is { } rem)
-                    {
-                        percentText = L("monitor.percent_remaining", FormatPercent(rem));
-                        fraction = Math.Clamp(rem / 100.0, 0, 1);
-                    }
-                }
+                    double? fraction = null;
+                    Color? barColor = null;
+                    var percentText = "";
 
-                // MiniMax-style absolute counts replace the percent text when present
-                // ("已用 0/3 次"); the remaining bar still shows the headroom.
-                if (state.Provider == ProviderId.MiniMax &&
-                    window.UsedText is not null && window.TotalText is not null && !window.IsUnlimited)
+                    if (window.IsUnlimited)
+                    {
+                        percentText = L("monitor.unlimited");
+                    }
+                    else if (!window.HasAnyQuotaField)
+                    {
+                        percentText = L("monitor.not_provided");
+                    }
+                    else if (window.PercentOutOfRange || window.UsedPercent is < 0 or > 100)
+                    {
+                        percentText = L("monitor.percent_out_of_range",
+                            FormatPercent((window.UsedPercent ?? window.RemainingPercent) ?? 0));
+                    }
+                    else
+                    {
+                        // Bar fill follows the DISPLAYED direction (used for MiniMax/Ark,
+                        // remaining for Codex); the COLOR always grades by remaining, which
+                        // is the number the reminder thresholds speak.
+                        var remaining = window.RemainingPercent ?? 0;
+                        barColor = remaining switch
+                        {
+                            <= ReminderEvaluator.Level2RemainingPercent => BarRed,
+                            <= ReminderEvaluator.Level1RemainingPercent => BarAmber,
+                            _ => BarGreen,
+                        };
+
+                        if (window.DisplayAsUsed && window.UsedPercent is { } used)
+                        {
+                            percentText = L("monitor.percent_used_only", FormatPercent(used));
+                            fraction = Math.Clamp(used / 100.0, 0, 1);
+                        }
+                        else if (window.RemainingPercent is { } rem)
+                        {
+                            percentText = L("monitor.percent_remaining", FormatPercent(rem));
+                            fraction = Math.Clamp(rem / 100.0, 0, 1);
+                        }
+                    }
+
+                    // MiniMax-style absolute counts replace the percent text when present
+                    // ("已用 0/3 次"); the remaining bar still shows the headroom.
+                    if (state.Provider == ProviderId.MiniMax &&
+                        window.UsedText is not null && window.TotalText is not null && !window.IsUnlimited)
+                    {
+                        percentText = L("monitor.counts_used", window.UsedText, window.TotalText);
+                    }
+
+                    rows.Add(new RowDesc(rowTitle, percentText, fraction, barColor,
+                        ResetText(window), dimmed, null));
+                }
+            }
+
+            if (snapshot.ResetCredits is { } credits)
+            {
+                // Reference interaction: "Full reset [重置权益] 可用 3 次 ›" — the NEXT expiry
+                // is always visible on the right, per-credit expiry lines are COLLAPSED until
+                // the row is clicked. Expanded, EVERY credit gets a line so the count and the
+                // list always agree.
+                var nextExpiry = credits.Details?
+                    .Where(c => c.ExpiresAtUtc.HasValue)
+                    .OrderBy(c => c.ExpiresAtUtc)
+                    .FirstOrDefault();
+                var chevron = _creditsExpanded ? " ⌄" : " ›";
+                rows.Add(new RowDesc(
+                    credits.Details is { Count: > 0 } ? credits.Details[0].Title : L("monitor.badge.reset_credit"),
+                    L("monitor.reset_credits_count", credits.AvailableCount) + chevron,
+                    null, null,
+                    nextExpiry?.ExpiresAtUtc is { } exp ? $"{exp.ToLocalTime():M/d HH:mm} " + L("monitor.credit_expiry_suffix") : "—",
+                    dimmed, null, Clickable: true));
+
+                if (credits.Details is null)
                 {
-                    percentText = L("monitor.counts_used", window.UsedText, window.TotalText);
+                    if (_creditsExpanded) rows.Add(new RowDesc(L("monitor.reset_credits_count_only"), "", null, null, "", dimmed, null));
                 }
-
-                AddRow(rowsPanel,
-                    rowTitle,
-                    "",
-                    percentText,
-                    fraction,
-                    barColor,
-                    ResetText(window),
-                    dimmed);
+                else if (_creditsExpanded)
+                {
+                    foreach (var credit in credits.Details)
+                    {
+                        var line = credit.Title;
+                        if (credit.ExpiresAtUtc is { } expires)
+                        {
+                            line += " · " + L("monitor.reset_credit_expires", expires.ToLocalTime().ToString("M/d HH:mm"));
+                        }
+                        if (credit.Status is { } status && status != "available")
+                        {
+                            line += $" [{status}]";
+                        }
+                        rows.Add(new RowDesc("• " + line, "", null, null, "", dimmed, null));
+                    }
+                }
             }
         }
 
-        if (snapshot.ResetCredits is { } credits)
-        {
-            // Reference interaction: "Full reset [重置权益] 可用 3 次 ›" — the NEXT expiry
-            // is always visible on the right, per-credit expiry lines are COLLAPSED until
-            // the row is clicked. Expanded, EVERY credit gets a line so the count and the
-            // list always agree.
-            var nextExpiry = credits.Details?
-                .Where(c => c.ExpiresAtUtc.HasValue)
-                .OrderBy(c => c.ExpiresAtUtc)
-                .FirstOrDefault();
-            var chevron = _creditsExpanded ? " ⌄" : " ›";
-            var creditsRow = AddRow(rowsPanel,
-                credits.Details is { Count: > 0 } ? credits.Details[0].Title : L("monitor.badge.reset_credit"),
-                L("monitor.badge.reset_credit"),
-                L("monitor.reset_credits_count", credits.AvailableCount) + chevron,
-                null, null,
-                nextExpiry?.ExpiresAtUtc is { } exp ? $"{exp.ToLocalTime():M/d HH:mm} " + L("monitor.credit_expiry_suffix") : "—",
-                dimmed);
-
-            if (credits.Details is null)
-            {
-                if (_creditsExpanded) AddNoteRow(rowsPanel, L("monitor.reset_credits_count_only"));
-            }
-            else if (_creditsExpanded)
-            {
-                foreach (var credit in credits.Details)
-                {
-                    var line = credit.Title;
-                    if (credit.ExpiresAtUtc is { } expires)
-                    {
-                        line += " · " + L("monitor.reset_credit_expires", expires.ToLocalTime().ToString("M/d HH:mm"));
-                    }
-                    if (credit.Status is { } status && status != "available")
-                    {
-                        line += $" [{status}]";
-                    }
-                    AddNoteRow(rowsPanel, "• " + line);
-                }
-            }
-
-            // The whole row is the toggle target (labels swallow clicks otherwise).
-            MakeClickable(creditsRow, () =>
-            {
-                _creditsExpanded = !_creditsExpanded;
-                UpdateQuotaView();
-            });
-        }
+        ApplyCardRows(state.Provider, rowsPanel, rows);
 
         SizeCard(card, rowsPanel);
+    }
+
+    /// <summary>
+    /// Applies the row descriptors: a STRUCTURAL rebuild only when the signature changed,
+    /// otherwise an in-place text/brush refresh on the existing controls. This is what
+    /// keeps clicks and refresh cycles from rebuilding dozens of controls each time.
+    /// </summary>
+    private void ApplyCardRows(ProviderId id, FlowLayoutPanel rowsPanel, List<RowDesc> rows)
+    {
+        var signature = string.Join("|", rows.Select(r =>
+            $"{r.Title}#{r.Percent}#{r.Fraction}#{r.BarColor}#{r.Right}#{r.Dimmed}#{r.Note}"));
+
+        if (_cardSignatures.TryGetValue(id, out var previous) &&
+            previous == signature &&
+            _cardRowControls.TryGetValue(id, out var existing) &&
+            existing.Count == rows.Count)
+        {
+            for (var i = 0; i < rows.Count; i++)
+            {
+                UpdateRowInPlace(existing[i], rows[i]);
+            }
+            return;
+        }
+
+        _cardSignatures[id] = signature;
+        ClearRows(rowsPanel);
+        var controls = new List<Control>(rows.Count);
+        rowsPanel.SuspendLayout();
+        foreach (var desc in rows)
+        {
+            var row = AddRow(rowsPanel, desc);
+            if (desc.Clickable) MakeClickable(row, ToggleCreditsExpansion);
+            controls.Add(row);
+        }
+        rowsPanel.ResumeLayout(true);
+        _cardRowControls[id] = controls;
+    }
+
+    private static void UpdateRowInPlace(Control row, RowDesc desc)
+    {
+        foreach (Control child in row.Controls)
+        {
+            switch (child.Tag)
+            {
+                case "t" when child.Text != desc.Title:
+                    child.Text = desc.Title;
+                    break;
+                case "p" when child.Text != desc.Percent:
+                    child.Text = desc.Percent;
+                    break;
+                case "r" when child.Text != desc.Right:
+                    child.Text = desc.Right;
+                    break;
+                case "b" when child is QuotaBar bar:
+                    if (Math.Abs(bar.Fraction - (desc.Fraction ?? 0)) > 0.0001) bar.Fraction = desc.Fraction ?? 0;
+                    if (desc.BarColor is { } color && bar.FillColor != color)
+                    {
+                        bar.FillColor = color;
+                        bar.Invalidate();
+                    }
+                    break;
+                case "n" when child.Text != (desc.Note ?? ""):
+                    child.Text = desc.Note ?? "";
+                    break;
+            }
+        }
     }
 
     /// <summary>Expands/collapses the reset-credit expiry details; survives refreshes within the session.</summary>
@@ -762,19 +836,10 @@ public sealed class MonitorForm : Form
         }
     }
 
-    private static void AddNoteRow(FlowLayoutPanel rowsPanel, string text)
+    private void ToggleCreditsExpansion()
     {
-        rowsPanel.Controls.Add(new Label
-        {
-            Text = text,
-            AutoSize = false,
-            AutoEllipsis = true,
-            Width = Math.Max(200, rowsPanel.Width - 4),
-            Height = 17,
-            ForeColor = TextSecondary,
-            Font = new Font(LocalizationService.CurrentLanguage == "en-US" ? "Segoe UI" : "Microsoft YaHei UI", 8F),
-            Margin = new Padding(0, 0, 0, 2),
-        });
+        _creditsExpanded = !_creditsExpanded;
+        UpdateQuotaView();
     }
 
     private static void ClearRows(FlowLayoutPanel rowsPanel)
@@ -825,9 +890,16 @@ public sealed class MonitorForm : Form
     /// middle column, reset time right-aligned, and a full-width bar underneath.
     /// Widths derive from the row panel — no fixed pixel math.
     /// </summary>
-    private Control AddRow(FlowLayoutPanel rowsPanel, string title, string badge, string? percentText,
-        double? fraction, Color? barColor, string? rightText, bool dimmed, string? note = null)
+    private Control AddRow(FlowLayoutPanel rowsPanel, RowDesc desc)
     {
+        var title = desc.Title;
+        var percentText = desc.Percent;
+        var fraction = desc.Fraction;
+        var barColor = desc.BarColor;
+        var rightText = desc.Right;
+        var dimmed = desc.Dimmed;
+        var note = desc.Note;
+
         var w = Math.Max(200, rowsPanel.Width - 4);
         var row = new Panel
         {
@@ -850,6 +922,7 @@ public sealed class MonitorForm : Form
         var titleLabel = new Label
         {
             Text = title,
+            Tag = "t",
             AutoSize = false,
             AutoEllipsis = true,
             Location = new Point(0, 0),
@@ -858,23 +931,22 @@ public sealed class MonitorForm : Form
         };
         row.Controls.Add(titleLabel);
 
-        if (percentText is not null)
+        var percentLabel = new Label
         {
-            var percentLabel = new Label
-            {
-                Text = percentText,
-                AutoSize = false,
-                AutoEllipsis = true,
-                Size = new Size(Math.Max(60, percentW), 20),
-                Location = new Point(percentX, 0),
-                ForeColor = fore,
-            };
-            row.Controls.Add(percentLabel);
-        }
+            Text = percentText,
+            Tag = "p",
+            AutoSize = false,
+            AutoEllipsis = true,
+            Size = new Size(Math.Max(60, percentW), 20),
+            Location = new Point(percentX, 0),
+            ForeColor = fore,
+        };
+        row.Controls.Add(percentLabel);
 
         var rightLabel = new Label
         {
-            Text = rightText ?? "",
+            Text = rightText,
+            Tag = "r",
             AutoSize = false,
             AutoEllipsis = true,
             TextAlign = ContentAlignment.MiddleRight,
@@ -891,6 +963,7 @@ public sealed class MonitorForm : Form
             // stays unobstructed at the right.
             var bar = new QuotaBar
             {
+                Tag = "b",
                 Fraction = f,
                 FillColor = color,
                 Size = new Size(Math.Max(40, w - percentX - 10), 6),
@@ -910,6 +983,7 @@ public sealed class MonitorForm : Form
             var noteLabel = new Label
             {
                 Text = note,
+                Tag = "n",
                 AutoSize = false,
                 AutoEllipsis = true,
                 Size = new Size(w, 16),
@@ -1120,8 +1194,7 @@ public sealed class MonitorForm : Form
             _memorySampledLabel.Text = L("monitor.memory_sampled", "—");
         }
 
-        _trendChart.Samples = _coordinator.MemoryHistory.Snapshot();
-        _trendChart.Invalidate();
+        _trendChart.SetSamples(_coordinator.MemoryHistory.Snapshot());
     }
 
     // ---------- settings view ----------
@@ -1636,6 +1709,9 @@ public sealed class MonitorForm : Form
     /// <summary>White rounded card with a hairline border (provider sections / view pages).</summary>
     internal sealed class CardPanel : Panel
     {
+        private GraphicsPath? _cachedPath;
+        private Size _cachedSize;
+
         public CardPanel()
         {
             DoubleBuffered = true;
@@ -1644,11 +1720,22 @@ public sealed class MonitorForm : Form
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
-            using var path = RoundedPath(new Rectangle(0, 0, Width - 1, Height - 1), 12);
+            if (_cachedSize != Size || _cachedPath is null)
+            {
+                _cachedPath?.Dispose();
+                _cachedPath = RoundedPath(new Rectangle(0, 0, Width - 1, Height - 1), 12);
+                _cachedSize = Size;
+            }
             using var brush = new SolidBrush(BackColor);
-            e.Graphics.FillPath(brush, path);
+            e.Graphics.FillPath(brush, _cachedPath);
             using var pen = new Pen(CardBorder);
-            e.Graphics.DrawPath(pen, path);
+            e.Graphics.DrawPath(pen, _cachedPath);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) _cachedPath?.Dispose();
+            base.Dispose(disposing);
         }
     }
 
@@ -1665,11 +1752,32 @@ public sealed class MonitorForm : Form
         public string EmptyText { get; set; } = "";
 
         private const int GapBreakThresholdSeconds = 15;
+        private const int MaxDrawPoints = 240;
+
+        private int _lastSampleCount = -1;
+        private DateTimeOffset _lastSampleStamp;
+        private Pen? _linePen;
 
         public MemoryTrendChart()
         {
             DoubleBuffered = true;
             BackColor = Color.White;
+        }
+
+        /// <summary>
+        /// Assigns samples and repaints — SKIPPED entirely when nothing changed (same
+        /// count and same last stamp). The coordinator samples every 5 s and events fire
+        /// on every view switch; repainting 720-point curves for identical data was pure
+        /// waste on the UI thread.
+        /// </summary>
+        public void SetSamples(MemorySample[] samples)
+        {
+            var last = samples.Length > 0 ? samples[^1].SampledAtUtc : DateTimeOffset.MinValue;
+            if (samples.Length == _lastSampleCount && last == _lastSampleStamp) return;
+            _lastSampleCount = samples.Length;
+            _lastSampleStamp = last;
+            Samples = samples;
+            Invalidate();
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -1690,6 +1798,7 @@ public sealed class MonitorForm : Form
                 return;
             }
 
+            _linePen ??= new Pen(Accent, 1.6f);
             DrawSeries(g, chartTop, chartHeight, s => (double)s.PhysicalAvailableBytes, SeriesNames.Physical);
             DrawSeries(g, chartTop + chartHeight + 12, chartHeight, s => (double)s.CommitTotalBytes, SeriesNames.Commit);
         }
@@ -1702,10 +1811,27 @@ public sealed class MonitorForm : Form
 
             var now = DateTimeOffset.UtcNow;
             var windowStart = now.AddHours(-1);
-            double min = double.MaxValue, max = double.MinValue;
-            foreach (var s in Samples)
+
+            // Downsample: GDI+ happily draws 720 points but the per-point cost adds up at
+            // 150% DPI with two repaints per second-class interaction; 240 points is far
+            // past visual resolution for a 1-hour chart. The LAST sample is always kept.
+            var relevant = Samples.Where(s => s.SampledAtUtc >= windowStart).ToList();
+            List<MemorySample> points;
+            if (relevant.Count > MaxDrawPoints)
             {
-                if (s.SampledAtUtc < windowStart) continue;
+                var stride = (int)Math.Ceiling(relevant.Count / (double)MaxDrawPoints);
+                points = [];
+                for (var i = 0; i < relevant.Count; i += stride) points.Add(relevant[i]);
+                if (points[^1] != relevant[^1]) points.Add(relevant[^1]);
+            }
+            else
+            {
+                points = relevant;
+            }
+
+            double min = double.MaxValue, max = double.MinValue;
+            foreach (var s in points)
+            {
                 var v = value(s);
                 if (v < min) min = v;
                 if (v > max) max = v;
@@ -1725,20 +1851,11 @@ public sealed class MonitorForm : Form
             float X(DateTimeOffset t) => bounds.Left + (float)((t - windowStart) / TimeSpan.FromHours(1)) * bounds.Width;
             float Y(double v) => bounds.Bottom - (float)((v - min) / (max - min)) * bounds.Height;
 
-            using var linePen = new Pen(Accent, 1.6f);
-
-            // Build the polyline with gap breaks, keeping segments so the area fill can
-            // follow the same breaks (缺测不插值，spec §6).
+            var previous = default(MemorySample);
             var segments = new List<List<PointF>>();
             var current = new List<PointF>();
-            var previous = default(MemorySample);
-            foreach (var s in Samples)
+            foreach (var s in points)
             {
-                if (s.SampledAtUtc < windowStart)
-                {
-                    previous = s;
-                    continue;
-                }
                 if (previous is not null &&
                     (s.SampledAtUtc - previous.SampledAtUtc).TotalSeconds > GapBreakThresholdSeconds)
                 {
@@ -1752,7 +1869,7 @@ public sealed class MonitorForm : Form
 
             foreach (var segment in segments)
             {
-                g.DrawLines(linePen, [.. segment]);
+                g.DrawLines(_linePen!, [.. segment]);
 
                 // Soft area fill under the curve.
                 var fillPoints = new List<PointF>(segment)
@@ -1766,9 +1883,9 @@ public sealed class MonitorForm : Form
                 g.FillPolygon(fillBrush, [.. fillPoints]);
 
                 // A lone sample (fresh start) would otherwise render as an empty chart.
-                var last = segment[^1];
+                var lastPoint = segment[^1];
                 using var dotBrush = new SolidBrush(Accent);
-                g.FillEllipse(dotBrush, last.X - 3, last.Y - 3, 6, 6);
+                g.FillEllipse(dotBrush, lastPoint.X - 3, lastPoint.Y - 3, 6, 6);
             }
 
             // Axis labels: min/max of THIS series only, in bytes — never a shared unitless axis.
