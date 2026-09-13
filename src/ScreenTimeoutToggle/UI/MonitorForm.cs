@@ -565,6 +565,7 @@ public sealed class MonitorForm : Form
 
         badge.Text = snapshot?.Buckets.FirstOrDefault(b => b.Tier is not null)?.Tier ?? "";
         badge.Visible = badge.Text.Length > 0;
+        badge.FitToText();
         badge.Left = title.Left + title.PreferredWidth + 8;
 
         ClearRows(rowsPanel);
@@ -641,7 +642,9 @@ public sealed class MonitorForm : Form
 
                 if (window.UsedText is not null && window.TotalText is not null)
                 {
-                    percentText += " · " + L("monitor.counts", window.UsedText, window.TotalText);
+                    // 绝对次数存在时以次数为主文案（对齐参照的「已用 0 / 3 次」），
+                    // 剩余方向仍由进度条表达——挤在一列里只会被省略号吃掉。
+                    percentText = L("monitor.counts_used", window.UsedText, window.TotalText);
                 }
 
                 AddRow(rowsPanel,
@@ -657,18 +660,62 @@ public sealed class MonitorForm : Form
 
         if (snapshot.ResetCredits is { } credits)
         {
-            var detail = credits.Details is { Count: > 0 }
-                ? DescribeCreditDetails(credits)
-                : credits.Details is null ? L("monitor.reset_credits_count_only") : L("monitor.reset_credits_empty_details");
+            // Readable credits block: one summary row (next expiry on the right) plus one
+            // short line PER credit — a long joined string in the right column truncated
+            // into uselessness on a real machine.
+            var nextExpiry = credits.Details?
+                .Where(c => c.ExpiresAtUtc.HasValue)
+                .OrderBy(c => c.ExpiresAtUtc)
+                .FirstOrDefault();
             AddRow(rowsPanel,
                 L("monitor.reset_credits", credits.AvailableCount),
-                L("monitor.badge.reset_credit"),
+                "",
                 null, null, null,
-                detail,
-                dimmed: false);
+                nextExpiry?.ExpiresAtUtc is { } exp ? $"{exp.ToLocalTime():M/d HH:mm} " + L("monitor.credit_expiry_suffix") : "—",
+                dimmed);
+
+            if (credits.Details is null)
+            {
+                AddNoteRow(rowsPanel, L("monitor.reset_credits_count_only"));
+            }
+            else if (credits.Details.Count == 0)
+            {
+                AddNoteRow(rowsPanel, L("monitor.reset_credits_empty_details"));
+            }
+            else
+            {
+                foreach (var credit in credits.Details)
+                {
+                    var line = credit.Title;
+                    if (credit.ExpiresAtUtc is { } expires)
+                    {
+                        line += " · " + L("monitor.reset_credit_expires", expires.ToLocalTime().ToString("M/d HH:mm"));
+                    }
+                    if (credit.Status is { } status && status != "available")
+                    {
+                        line += $" [{status}]";
+                    }
+                    AddNoteRow(rowsPanel, "• " + line);
+                }
+            }
         }
 
         SizeCard(card, rowsPanel);
+    }
+
+    private static void AddNoteRow(FlowLayoutPanel rowsPanel, string text)
+    {
+        rowsPanel.Controls.Add(new Label
+        {
+            Text = text,
+            AutoSize = false,
+            AutoEllipsis = true,
+            Width = Math.Max(200, rowsPanel.Width - 4),
+            Height = 17,
+            ForeColor = TextSecondary,
+            Font = new Font(LocalizationService.CurrentLanguage == "en-US" ? "Segoe UI" : "Microsoft YaHei UI", 8F),
+            Margin = new Padding(0, 0, 0, 2),
+        });
     }
 
     private static void ClearRows(FlowLayoutPanel rowsPanel)
@@ -702,25 +749,6 @@ public sealed class MonitorForm : Form
 
     private static string ShortName(string name, int maxLength = 12) =>
         name.Length <= maxLength ? name : name[..(maxLength - 1)] + "…";
-
-    private static string DescribeCreditDetails(ResetCreditSummary credits)
-    {
-        if (credits.Details is null) return L("monitor.reset_credits_count_only");
-        if (credits.Details.Count == 0) return L("monitor.reset_credits_empty_details");
-        return string.Join("；", credits.Details.Select(c =>
-        {
-            var title = c.Title;
-            if (c.ExpiresAtUtc is { } expires)
-            {
-                title += " " + L("monitor.reset_credit_expires", FormatTime(expires));
-            }
-            if (c.Status is { } status && status != "available")
-            {
-                title += $" [{status}]";
-            }
-            return title;
-        }));
-    }
 
     /// <summary>
     /// One quota row, reference-style: title + badge on the left, remaining % in the
@@ -1490,14 +1518,27 @@ public sealed class MonitorForm : Form
             Size = new Size(36, 18);
         }
 
+        /// <summary>
+        /// Sizes the badge from the CURRENT font right now — the caller does this when the
+        /// text changes, in the same coordinate space as the rest of the row. Sizing inside
+        /// OnPaint turned out to be unreliable (the extra repaint is not guaranteed before
+        /// a DrawToBitmap capture, and pre-handle measurements miss DPI scale).
+        /// </summary>
+        public void FitToText()
+        {
+            var textSize = TextRenderer.MeasureText(Text, Font);
+            Width = Math.Max(20, textSize.Width + 12);
+            Invalidate();
+        }
+
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
             var g = e.Graphics;
             g.Clear(BackColor);
             if (Text.Length == 0) return;
-            var textSize = TextRenderer.MeasureText(Text, Font);
-            var rect = new Rectangle(0, 0, textSize.Width + 10, Height - 1);
+
+            var rect = new Rectangle(0, 0, Width - 1, Height - 1);
             using var brush = new SolidBrush(Color.FromArgb(240, 240, 243));
             using var path = RoundedPath(rect, rect.Height / 2);
             g.FillPath(brush, path);
@@ -1508,9 +1549,13 @@ public sealed class MonitorForm : Form
         protected override void OnTextChanged(EventArgs e)
         {
             base.OnTextChanged(e);
-            var textSize = TextRenderer.MeasureText(Text, Font);
-            Width = Math.Max(20, textSize.Width + 12);
-            Invalidate();
+            FitToText();
+        }
+
+        protected override void OnFontChanged(EventArgs e)
+        {
+            base.OnFontChanged(e);
+            FitToText();
         }
     }
 

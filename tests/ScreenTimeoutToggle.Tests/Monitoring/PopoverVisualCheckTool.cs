@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using OBDim.Monitoring.Infrastructure;
 using OBDim.Monitoring.Models;
 using OBDim.Monitoring.Providers;
@@ -26,6 +27,10 @@ public class PopoverVisualCheckTool
 
         RunOnSta(() =>
         {
+            // Reproduce the real app's DPI context (the user's machine runs 150%) BEFORE
+            // any window exists — captures at unaware DPI hid real-machine layout bugs.
+            TryBecomePerMonitorDpiAware();
+
             var outDir = Path.Combine(Path.GetTempPath(), "obdim-visual");
             Directory.CreateDirectory(outDir);
 
@@ -73,6 +78,7 @@ public class PopoverVisualCheckTool
                         Details =
                         [
                             new ResetCredit { Title = "Full reset", Status = "available", ExpiresAtUtc = now.AddDays(8) },
+                            new ResetCredit { Title = "Full reset", Status = "available", ExpiresAtUtc = now.AddDays(21) },
                         ],
                     },
                 };
@@ -133,6 +139,21 @@ public class PopoverVisualCheckTool
                 try { Directory.Delete(dir, true); } catch (IOException) { }
             }
         });
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+
+    private static void TryBecomePerMonitorDpiAware()
+    {
+        try
+        {
+            _ = SetProcessDpiAwarenessContext(new IntPtr(-4)); // PER_MONITOR_AWARE_V2
+        }
+        catch
+        {
+            // Older OS without the export — capture proceeds at whatever context applies.
+        }
     }
 
     private static void Capture(Form form, string path)
