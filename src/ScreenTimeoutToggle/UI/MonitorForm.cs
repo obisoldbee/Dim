@@ -609,17 +609,37 @@ public sealed class MonitorForm : Form
                 continue;
             }
 
-            // The tier badge lives in the card header; the default Codex bucket needs no
-            // per-row name ("codex · 每周" says the same thing twice).
-            var rowBadge = IsDefaultBucket(state.Provider, bucket) ? "" : ShortName(bucket.DisplayName ?? bucket.SourceKey, 12);
-
             foreach (var window in bucket.Windows)
             {
+                // Row identity per provider, mirroring the reference semantics:
+                // Codex rows are "桶名 [窗口]"（Codex [每周]）; MiniMax primary model shows
+                // windows as titles, secondary models show the model as title; Ark rows are
+                // pure windows (the card header carries the plan).
+                var rowBadge = state.Provider switch
+                {
+                    ProviderId.Codex => WindowTitle(window),
+                    // MiniMax secondary models: "视频赠送 [当前周期]" — model as title,
+                    // window as badge; the primary model's rows need no badge.
+                    ProviderId.MiniMax when IsMiniMaxSecondaryModel(bucket) => WindowTitle(window),
+                    _ => "",
+                };
+                var rowTitle = state.Provider switch
+                {
+                    ProviderId.Codex => ShortName(bucket.DisplayName ?? bucket.SourceKey, 12),
+                    ProviderId.MiniMax when IsMiniMaxSecondaryModel(bucket) =>
+                        MiniMaxModelDisplay(bucket),
+                    _ => WindowTitle(window),
+                };
+
                 double? fraction = null;
                 Color? barColor = null;
                 var percentText = "";
 
-                if (!window.HasAnyQuotaField)
+                if (window.IsUnlimited)
+                {
+                    percentText = L("monitor.unlimited");
+                }
+                else if (!window.HasAnyQuotaField)
                 {
                     percentText = L("monitor.not_provided");
                 }
@@ -628,27 +648,41 @@ public sealed class MonitorForm : Form
                     percentText = L("monitor.percent_out_of_range",
                         FormatPercent((window.UsedPercent ?? window.RemainingPercent) ?? 0));
                 }
-                else if (window.RemainingPercent is { } remaining)
+                else
                 {
-                    percentText = L("monitor.percent_remaining", FormatPercent(remaining));
-                    fraction = Math.Clamp(remaining / 100.0, 0, 1);
+                    // Bar fill follows the DISPLAYED direction (used for MiniMax/Ark,
+                    // remaining for Codex); the COLOR always grades by remaining, which is
+                    // the number the reminder thresholds speak.
+                    var remaining = window.RemainingPercent ?? 0;
                     barColor = remaining switch
                     {
                         <= ReminderEvaluator.Level2RemainingPercent => BarRed,
                         <= ReminderEvaluator.Level1RemainingPercent => BarAmber,
                         _ => BarGreen,
                     };
+
+                    if (window.DisplayAsUsed && window.UsedPercent is { } used)
+                    {
+                        percentText = L("monitor.percent_used_only", FormatPercent(used));
+                        fraction = Math.Clamp(used / 100.0, 0, 1);
+                    }
+                    else if (window.RemainingPercent is { } rem)
+                    {
+                        percentText = L("monitor.percent_remaining", FormatPercent(rem));
+                        fraction = Math.Clamp(rem / 100.0, 0, 1);
+                    }
                 }
 
-                if (window.UsedText is not null && window.TotalText is not null)
+                // MiniMax-style absolute counts replace the percent text when present
+                // ("已用 0 / 3 次"); the remaining bar still shows the headroom.
+                if (state.Provider == ProviderId.MiniMax &&
+                    window.UsedText is not null && window.TotalText is not null && !window.IsUnlimited)
                 {
-                    // 绝对次数存在时以次数为主文案（对齐参照的「已用 0 / 3 次」），
-                    // 剩余方向仍由进度条表达——挤在一列里只会被省略号吃掉。
                     percentText = L("monitor.counts_used", window.UsedText, window.TotalText);
                 }
 
                 AddRow(rowsPanel,
-                    WindowTitle(window),
+                    rowTitle,
                     rowBadge,
                     percentText,
                     fraction,
@@ -660,17 +694,17 @@ public sealed class MonitorForm : Form
 
         if (snapshot.ResetCredits is { } credits)
         {
-            // Readable credits block: one summary row (next expiry on the right) plus one
-            // short line PER credit — a long joined string in the right column truncated
-            // into uselessness on a real machine.
+            // Reference-style credits row: "Full reset [重置权益] 可用 3 次" with the
+            // NEXT expiry on the right, then one readable bullet line per credit.
             var nextExpiry = credits.Details?
                 .Where(c => c.ExpiresAtUtc.HasValue)
                 .OrderBy(c => c.ExpiresAtUtc)
                 .FirstOrDefault();
             AddRow(rowsPanel,
-                L("monitor.reset_credits", credits.AvailableCount),
-                "",
-                null, null, null,
+                credits.Details is { Count: > 0 } ? credits.Details[0].Title : L("monitor.badge.reset_credit"),
+                L("monitor.badge.reset_credit"),
+                L("monitor.reset_credits_count", credits.AvailableCount),
+                null, null,
                 nextExpiry?.ExpiresAtUtc is { } exp ? $"{exp.ToLocalTime():M/d HH:mm} " + L("monitor.credit_expiry_suffix") : "—",
                 dimmed);
 
@@ -678,13 +712,9 @@ public sealed class MonitorForm : Form
             {
                 AddNoteRow(rowsPanel, L("monitor.reset_credits_count_only"));
             }
-            else if (credits.Details.Count == 0)
+            else if (credits.Details.Count > 1)
             {
-                AddNoteRow(rowsPanel, L("monitor.reset_credits_empty_details"));
-            }
-            else
-            {
-                foreach (var credit in credits.Details)
+                foreach (var credit in credits.Details.Skip(1))
                 {
                     var line = credit.Title;
                     if (credit.ExpiresAtUtc is { } expires)
@@ -725,10 +755,6 @@ public sealed class MonitorForm : Form
         foreach (var c in old) c.Dispose();
     }
 
-    /// <summary>Default buckets whose name adds no information (the legacy Codex view).</summary>
-    private static bool IsDefaultBucket(ProviderId provider, QuotaBucket bucket) =>
-        provider == ProviderId.Codex && bucket.SourceKey == "codex";
-
     /// <summary>
     /// Window titles follow the DURATION when the source provides one (10080 min → 每周,
     /// 300 min → 5 小时) — the same mental model as the macOS reference — falling back to
@@ -745,6 +771,21 @@ public sealed class MonitorForm : Form
         }
         var localized = LocalizeWindowKey(window.SourceKey, window.Label);
         return localized;
+    }
+
+    /// <summary>MiniMax's primary model ("general") IS the plan — its rows need no badge.</summary>
+    private static bool IsMiniMaxSecondaryModel(QuotaBucket bucket) =>
+        !string.Equals(bucket.SourceKey, "general", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Friendly display for known MiniMax models; unknown models pass through.</summary>
+    private static string MiniMaxModelDisplay(QuotaBucket bucket)
+    {
+        var model = bucket.DisplayName ?? bucket.SourceKey;
+        return model.ToLowerInvariant() switch
+        {
+            "video" => LocalizationService.Get("monitor.minimax.model.video"),
+            _ => model,
+        };
     }
 
     private static string ShortName(string name, int maxLength = 12) =>
@@ -869,11 +910,17 @@ public sealed class MonitorForm : Form
     {
         if (window.ResetsAtUtc is null) return "—";
         var local = window.ResetsAtUtc.Value.ToLocalTime();
-        if (local <= DateTimeOffset.Now)
+        var remaining = local - DateTimeOffset.Now;
+        if (remaining <= TimeSpan.Zero)
         {
-            return L("monitor.reset_pending");
+            return LocalizationService.Get("monitor.reset_pending");
         }
-        return $"{local:M/d HH:mm} " + L("monitor.reset_suffix");
+        // 像参照一样：一天内用倒计时，更远用绝对时间。
+        if (remaining <= TimeSpan.FromHours(24))
+        {
+            return FormatCountdown(remaining) + " " + LocalizationService.Get("monitor.reset_in");
+        }
+        return $"{local:M/d HH:mm} " + LocalizationService.Get("monitor.reset_suffix");
     }
 
     private static string ErrorKeyFor(ProviderErrorKind kind) => kind switch

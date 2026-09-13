@@ -173,9 +173,14 @@ public static class MiniMaxQuotaParser
         var start = EpochTime.FromMilliseconds(startMs);
         var end = EpochTime.FromMilliseconds(endMs);
         var hasCounts = totalCount is > 0;
+        // total == 0 且未消耗 = 该窗口不设上限（真实数据里 general/video 的周窗口如此），
+        // 显示为 ∞ 无限制而不是一根 100% 的绿条。
+        var unlimited = totalCount == 0 && remainingPercent == 100;
         windows.Add(new QuotaWindow
         {
             SourceKey = sourceKey,
+            DisplayAsUsed = true,
+            IsUnlimited = unlimited,
             UsedPercent = used,
             RemainingPercent = remaining,
             PercentOutOfRange = outOfRange,

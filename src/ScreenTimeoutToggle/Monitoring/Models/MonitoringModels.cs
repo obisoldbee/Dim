@@ -79,6 +79,20 @@ public sealed record QuotaWindow
     public bool HasAnyQuotaField { get; init; }
 
     /// <summary>
+    /// How the source expresses this window: true = percent is USED (MiniMax, Ark),
+    /// false = percent is REMAINING-style and the UI shows 剩余 (Codex). Normalization
+    /// keeps UsedPercent/RemainingPercent consistent either way — this flag only picks
+    /// the DISPLAY direction so rows read like the provider's own semantics.
+    /// </summary>
+    public bool DisplayAsUsed { get; init; }
+
+    /// <summary>
+    /// True when the source reports a count-cap of 0 with nothing consumed (MiniMax
+    /// weekly windows) — displayed as "∞ 无限制", never as a 100% bar.
+    /// </summary>
+    public bool IsUnlimited { get; init; }
+
+    /// <summary>
     /// The dedupe/reset identity of this window: provider + bucket + window + reset point.
     /// Windows without a reset point return false — the reminder rules refuse them.
     /// </summary>

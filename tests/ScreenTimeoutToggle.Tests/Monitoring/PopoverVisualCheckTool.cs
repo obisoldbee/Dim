@@ -53,7 +53,7 @@ public class PopoverVisualCheckTool
                         new QuotaBucket
                         {
                             SourceKey = "codex",
-                            DisplayName = "codex",
+                            DisplayName = "Codex",
                             Tier = "pro",
                             Windows =
                             [
@@ -84,12 +84,65 @@ public class PopoverVisualCheckTool
                 };
 
                 ProviderSnapshot snapshot = Next();
-                var adapter = new FakeAdapter(ProviderId.Codex, () => snapshot);
+                ProviderSnapshot MiniMaxNext() => new()
+                {
+                    Provider = ProviderId.MiniMax,
+                    IdentityKey = "minimax-visual",
+                    IdentityVerified = false,
+                    AttemptedAtUtc = now,
+                    SucceededAtUtc = now,
+                    Buckets =
+                    [
+                        new QuotaBucket
+                        {
+                            SourceKey = "general",
+                            DisplayName = "general",
+                            Windows =
+                            [
+                                new QuotaWindow { SourceKey = "interval", DisplayAsUsed = true, UsedPercent = 7, RemainingPercent = 93, ResetsAtUtc = now.AddHours(2.3), HasAnyQuotaField = true },
+                                new QuotaWindow { SourceKey = "weekly", DisplayAsUsed = true, IsUnlimited = true, UsedPercent = 0, RemainingPercent = 100, ResetsAtUtc = now.AddHours(9.3), HasAnyQuotaField = true },
+                            ],
+                        },
+                        new QuotaBucket
+                        {
+                            SourceKey = "video",
+                            DisplayName = "video",
+                            Windows =
+                            [
+                                new QuotaWindow { SourceKey = "interval", DisplayAsUsed = true, UsedPercent = 0, RemainingPercent = 100, ResetsAtUtc = now.AddHours(9.3), UsedText = "0", TotalText = "3", HasAnyQuotaField = true },
+                            ],
+                        },
+                    ],
+                };
+                ProviderSnapshot ArkNext() => new()
+                {
+                    Provider = ProviderId.Ark,
+                    IdentityKey = "ark-visual",
+                    IdentityVerified = true,
+                    AttemptedAtUtc = now,
+                    SucceededAtUtc = now,
+                    IdentityDisplay = "auth=sso",
+                    Buckets =
+                    [
+                        new QuotaBucket
+                        {
+                            SourceKey = "coding-plan",
+                            DisplayName = "coding-plan",
+                            Tier = "personal",
+                            Subscribed = true,
+                            Windows =
+                            [
+                                new QuotaWindow { SourceKey = "session", DisplayAsUsed = true, UsedPercent = 0, RemainingPercent = 100, HasAnyQuotaField = true },
+                                new QuotaWindow { SourceKey = "weekly", DisplayAsUsed = true, UsedPercent = 97.93, RemainingPercent = 2.07, ResetsAtUtc = now.AddHours(2.3), HasAnyQuotaField = true },
+                            ],
+                        },
+                    ],
+                };
                 var adapters = new Dictionary<ProviderId, IProviderAdapter>
                 {
-                    [ProviderId.Codex] = adapter,
-                    [ProviderId.MiniMax] = new NullAdapter(ProviderId.MiniMax),
-                    [ProviderId.Ark] = new NullAdapter(ProviderId.Ark),
+                    [ProviderId.Codex] = new FakeAdapter(ProviderId.Codex, () => snapshot),
+                    [ProviderId.MiniMax] = new FakeAdapter(ProviderId.MiniMax, MiniMaxNext),
+                    [ProviderId.Ark] = new FakeAdapter(ProviderId.Ark, ArkNext),
                 };
 
                 // Enable all providers in the temp monitoring.json so the cards render
@@ -112,8 +165,8 @@ public class PopoverVisualCheckTool
                 coordinator.Start();
                 // Push the fake snapshot through the real pipeline so the panel has data,
                 // and give the memory sampler one tick.
-                coordinator.RequestManualRefresh(ProviderId.Codex);
-                System.Threading.Thread.Sleep(1200);
+                coordinator.RequestManualRefreshAll();
+                System.Threading.Thread.Sleep(1500);
 
                 using var form = new MonitorForm(coordinator);
                 form.StartPosition = FormStartPosition.Manual;

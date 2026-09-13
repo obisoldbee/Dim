@@ -456,7 +456,7 @@ public static class CodexRateLimitsMapper
         return new QuotaBucket
         {
             SourceKey = key,
-            DisplayName = limitName ?? key,
+            DisplayName = limitName ?? (key == "codex" ? "Codex" : key),
             Tier = planType,
             Subscribed = null,
             Windows = windows,

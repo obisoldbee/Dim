@@ -202,6 +202,7 @@ public static class ArkPlanParser
             return new QuotaWindow
             {
                 SourceKey = label,
+                DisplayAsUsed = true, // ark 的 percent 就是已用（官方语义）
                 UsedPercent = used,
                 RemainingPercent = remaining,
                 PercentOutOfRange = outOfRange,
