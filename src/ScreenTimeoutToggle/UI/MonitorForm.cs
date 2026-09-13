@@ -795,8 +795,11 @@ public sealed class MonitorForm : Form
     /// </summary>
     private void ApplyCardRows(ProviderId id, FlowLayoutPanel rowsPanel, List<RowDesc> rows)
     {
+        // Clickable is part of the signature: it decides whether the row gets a click
+        // handler, and an in-place refresh never touches handlers — a row that becomes
+        // clickable (or stops being one) MUST be rebuilt, not refreshed in place.
         var signature = string.Join("|", rows.Select(r =>
-            $"{r.Title}#{r.Percent}#{r.Fraction}#{r.BarColor}#{r.Right}#{r.Dimmed}#{r.Note}"));
+            $"{r.Title}#{r.Percent}#{r.Fraction}#{r.BarColor}#{r.Right}#{r.Dimmed}#{r.Note}#{r.Clickable}"));
 
         if (_cardSignatures.TryGetValue(id, out var previous) &&
             previous == signature &&
@@ -1820,6 +1823,18 @@ public sealed class MonitorForm : Form
             _lastSampleStamp = last;
             Samples = samples;
             Invalidate();
+        }
+
+        /// <summary>Releases the cached pen — a Pen holds a GDI handle, so caching it is
+        /// only safe while the control also owns its disposal.</summary>
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _linePen?.Dispose();
+                _linePen = null;
+            }
+            base.Dispose(disposing);
         }
 
         protected override void OnPaint(PaintEventArgs e)

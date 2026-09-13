@@ -1,7 +1,55 @@
 using OBDim.Monitoring.Infrastructure;
+using OBDim.Monitoring.Models;
+using OBDim.Monitoring.Providers;
 using Xunit;
 
 namespace OBDim.Tests.Monitoring;
+
+/// <summary>
+/// A07: an entry that EXISTS but cannot be launched safely (.ps1, a bare POSIX shim, an
+/// unparsable npm shim) is a different problem from "the CLI was never installed" — the
+/// user gets different instructions. The three providers used to collapse every locate
+/// error into CliNotFound, which made ProviderErrorKind.UnsupportedEntry dead code.
+/// </summary>
+public class LocateFailureClassificationTests
+{
+    private static readonly DateTimeOffset Attempted = new(2026, 9, 13, 12, 0, 0, TimeSpan.Zero);
+
+    [Theory]
+    [InlineData("cli.locate_unsupported_entry")]
+    [InlineData("cli.locate_shim_unparsable")]
+    [InlineData("cli.locate_shim_too_large")]
+    [InlineData("cli.locate_shim_unreadable")]
+    public void ShimAndEntryErrors_ClassifyAsUnsupportedEntry(string error)
+    {
+        var snapshot = SnapshotFactory.LocateFailure(
+            ProviderId.MiniMax, new CliLocation { Error = error }, Attempted);
+
+        Assert.Equal(ProviderErrorKind.UnsupportedEntry, snapshot.Error);
+        Assert.Equal("monitor.error.unsupported_entry", snapshot.ErrorMessage);
+        Assert.False(snapshot.IdentityVerified);
+    }
+
+    [Fact]
+    public void NeverInstalled_StaysCliNotFound()
+    {
+        var snapshot = SnapshotFactory.LocateFailure(
+            ProviderId.Codex, new CliLocation { Error = "cli.locate_not_found" }, Attempted);
+
+        Assert.Equal(ProviderErrorKind.CliNotFound, snapshot.Error);
+        Assert.Equal("monitor.error.cli_not_installed", snapshot.ErrorMessage);
+    }
+
+    [Fact]
+    public void ConfiguredPathGone_StaysCliNotFound_WithItsOwnMessage()
+    {
+        var snapshot = SnapshotFactory.LocateFailure(
+            ProviderId.Ark, new CliLocation { Error = "cli.locate_configured_missing" }, Attempted);
+
+        Assert.Equal(ProviderErrorKind.CliNotFound, snapshot.Error);
+        Assert.Equal("monitor.error.configured_path_missing", snapshot.ErrorMessage);
+    }
+}
 
 public class CliLocatorTests
 {

@@ -339,6 +339,17 @@ public class TrayApp : ApplicationContext
     /// <summary>Re-registers the popover hotkey when the user changed it in the settings view.</summary>
     private void OnMonitoringSettingsApplied()
     {
+        // The coordinator raises SettingsApplied from whatever thread applied the settings,
+        // and this disposes the old hotkey service and registers a new one against the tray
+        // message window. Marshal to the UI thread so a background caller cannot dispose a
+        // service the message loop is using — the failure mode is a hotkey that silently
+        // stops working, which is invisible until the user tries it.
+        if (_syncRoot.InvokeRequired)
+        {
+            _syncRoot.BeginInvoke(OnMonitoringSettingsApplied);
+            return;
+        }
+
         var desired = _monitorCoordinator?.Settings.PopoverHotkey ?? "Ctrl+Alt+D";
         if (string.Equals(desired, _popoverHotkeyRegistered, StringComparison.OrdinalIgnoreCase)) return;
 

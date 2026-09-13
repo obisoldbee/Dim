@@ -211,6 +211,60 @@ public class ReminderEvaluatorTests
         Assert.Empty(ReminderEvaluator.Evaluate(Snapshot(3, fresh: false), marks, Now));
     }
 
+    /// <summary>
+    /// Codex mixes a 5-hour window with a weekly one. The 5-hour window rolling over used
+    /// to mark the WHOLE snapshot stale, which silenced the weekly window too — a valid
+    /// "3 % left this week" alert never fired. The reset-point gate belongs to the window
+    /// it describes; only the 15-minute age gate is snapshot-wide.
+    /// </summary>
+    [Fact]
+    public void ExpiredWindow_DoesNotSilenceOtherWindows()
+    {
+        var marks = new HashSet<string>();
+        var s = new ProviderSnapshot
+        {
+            Provider = ProviderId.Codex,
+            IdentityKey = "ident",
+            IdentityVerified = true,
+            AttemptedAtUtc = Now.AddMinutes(-1),
+            SucceededAtUtc = Now.AddMinutes(-1),
+            Buckets =
+            [
+                new QuotaBucket
+                {
+                    SourceKey = "codex",
+                    Windows =
+                    [
+                        // Reset point already passed: this window's number may have been
+                        // refilled, so it must not alert.
+                        new QuotaWindow { SourceKey = "five-hour", UsedPercent = 90, RemainingPercent = 10, ResetsAtUtc = Now.AddHours(-1), HasAnyQuotaField = true },
+                        // Still inside its window and genuinely low: must still alert.
+                        new QuotaWindow { SourceKey = "weekly", UsedPercent = 97, RemainingPercent = 3, ResetsAtUtc = Now.AddHours(20), HasAnyQuotaField = true },
+                    ],
+                },
+            ],
+        };
+
+        // Guard against the test passing for the wrong reason: the snapshot IS "stale"
+        // by the panel's definition (a window rolled over).
+        Assert.True(FreshnessEvaluator.IsStale(s, Now));
+
+        var events = ReminderEvaluator.Evaluate(s, marks, Now);
+        var evt = Assert.Single(events);
+        Assert.Equal("weekly", evt.WindowKey);
+        Assert.Equal(2, evt.Level);
+        Assert.Equal(3, evt.RemainingPercent);
+    }
+
+    /// <summary>A window past its own reset point must not alert, even when it is low.</summary>
+    [Fact]
+    public void WindowPastItsOwnResetPoint_DoesNotFire()
+    {
+        var marks = new HashSet<string>();
+        var s = Snapshot(3, resetAt: Now.AddHours(-1));
+        Assert.Empty(ReminderEvaluator.Evaluate(s, marks, Now));
+    }
+
     /// <summary>A09: 身份变化后旧 marks 不得延续 — 由协调器换 key 实现，这里验证 key 本身带身份维度。</summary>
     [Fact]
     public void ReminderKey_IncludesProviderBucketWindowReset()

@@ -233,6 +233,52 @@ public class MonitoringCoordinatorTests : IDisposable
         Assert.DoesNotContain("ident-A", coordinator.GetDisplayState(ProviderId.Codex).LastGood!.IdentityKey);
     }
 
+    /// <summary>
+    /// A09 — the case `identityChanged` cannot see: signing OUT produces a snapshot with
+    /// NO verified identity, so the switch branch never fires and the previous account's
+    /// quota would keep being displayed (dimmed, but still the wrong person's numbers,
+    /// and still driving reminders). A credential-level failure must drop it.
+    /// Transport failures (timeout / api / parse) must NOT — see
+    /// <see cref="Failure_KeepsPreviousGoodSnapshot_AndShowsFailure"/>.
+    /// </summary>
+    [Fact]
+    public async Task NotSignedIn_DropsPreviousAccountQuota()
+    {
+        ProviderSnapshot next = Good(ProviderId.Codex, "ident-A");
+        var adapter = new FakeAdapter(ProviderId.Codex, () => next);
+        using var coordinator = new MonitoringCoordinator(
+            _clock, new NullMemoryReader(),
+            new Dictionary<ProviderId, IProviderAdapter> { [ProviderId.Codex] = adapter },
+            MakeSettingsService(EnabledSettings(enabled: ProviderId.Codex)),
+            new MonitoringCacheService(_cacheDir));
+
+        coordinator.QuotaStateChanged += () => { };
+
+        coordinator.RequestManualRefresh(ProviderId.Codex);
+        await WaitForAsync(() => coordinator.GetDisplayState(ProviderId.Codex).LastGood, TimeSpan.FromSeconds(10), "identity A snapshot");
+        Assert.Equal("ident-A", coordinator.GetDisplayState(ProviderId.Codex).LastGood!.IdentityKey);
+
+        // Signed out: the account is gone, so its numbers must go with it.
+        next = Failure(ProviderId.Codex, ProviderErrorKind.NotSignedIn);
+        ClearManualGate();
+        coordinator.RequestManualRefresh(ProviderId.Codex);
+        await WaitForTrueAsync(
+            () => coordinator.GetDisplayState(ProviderId.Codex).LastAttempt?.Error == ProviderErrorKind.NotSignedIn,
+            TimeSpan.FromSeconds(10), "not-signed-in attempt");
+
+        var state = coordinator.GetDisplayState(ProviderId.Codex);
+        Assert.Null(state.LastGood);
+        Assert.NotNull(state.LastAttempt);
+        Assert.Equal(ProviderErrorKind.NotSignedIn, state.LastAttempt!.Error);
+
+        // Re-signing in (even as the same identity) brings the panel back to life.
+        next = Good(ProviderId.Codex, "ident-A");
+        ClearManualGate();
+        coordinator.RequestManualRefresh(ProviderId.Codex);
+        await WaitForAsync(() => coordinator.GetDisplayState(ProviderId.Codex).LastGood, TimeSpan.FromSeconds(10), "snapshot after re-signin");
+        Assert.Equal("ident-A", coordinator.GetDisplayState(ProviderId.Codex).LastGood!.IdentityKey);
+    }
+
     [Fact]
     public async Task SingleFlight_SecondManualStartRejected()
     {
