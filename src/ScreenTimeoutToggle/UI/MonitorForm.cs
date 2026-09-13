@@ -516,6 +516,11 @@ public sealed class MonitorForm : Form
     private void UpdateQuotaView()
     {
         if (IsDisposed) return;
+        var cardWidth = Math.Max(200, _quotaView.ClientSize.Width - 24);
+        foreach (var id in Enum.GetValues<ProviderId>())
+        {
+            if (_cards.TryGetValue(id, out var card)) card.Width = cardWidth;
+        }
         foreach (var state in _coordinator.GetDisplayStates())
         {
             UpdateCard(state);
@@ -548,6 +553,11 @@ public sealed class MonitorForm : Form
         statusBits.AddRange(parts);
         statusLabel.Text = statusBits.Count == 0 ? L("monitor.state_no_data_yet") : string.Join(" · ", statusBits);
         statusLabel.ForeColor = hasFailure ? BarRed : TextSecondary;
+        statusLabel.MaximumSize = new Size(card.Width - 28, 0);
+
+        // Rows start below the (possibly wrapping) status line — never at a fixed offset.
+        rowsPanel.Location = new Point(2, statusLabel.Bottom + 6);
+        rowsPanel.Width = card.Width - 34;
 
         badge.Text = snapshot?.Buckets.FirstOrDefault(b => b.Tier is not null)?.Tier ?? "";
         badge.Visible = badge.Text.Length > 0;
@@ -711,14 +721,16 @@ public sealed class MonitorForm : Form
     /// <summary>
     /// One quota row, reference-style: title + badge on the left, remaining % in the
     /// middle column, reset time right-aligned, and a full-width bar underneath.
+    /// Widths derive from the row panel — no fixed pixel math.
     /// </summary>
     private void AddRow(FlowLayoutPanel rowsPanel, string title, string badge, string? percentText,
         double? fraction, Color? barColor, string? rightText, bool dimmed, string? note = null)
     {
+        var w = Math.Max(200, rowsPanel.Width - 4);
         var row = new Panel
         {
             AutoSize = true,
-            Width = 342,
+            Width = w,
             Margin = new Padding(0, 3, 0, 3),
             BackColor = Color.White,
         };
@@ -754,7 +766,7 @@ public sealed class MonitorForm : Form
                 Text = percentText,
                 AutoSize = false,
                 AutoEllipsis = true,
-                Size = new Size(108, 20),
+                Size = new Size(Math.Max(60, w - 154 - 92), 20),
                 Location = new Point(154, 0),
                 ForeColor = fore,
             };
@@ -768,7 +780,7 @@ public sealed class MonitorForm : Form
             AutoEllipsis = true,
             TextAlign = ContentAlignment.MiddleRight,
             Size = new Size(84, 20),
-            Location = new Point(258, 0),
+            Location = new Point(w - 86, 0),
             ForeColor = dimmed ? fore : TextSecondary,
             Font = new Font(Font.FontFamily, 8F),
         };
@@ -780,7 +792,7 @@ public sealed class MonitorForm : Form
             {
                 Fraction = f,
                 FillColor = color,
-                Size = new Size(342, 6),
+                Size = new Size(w, 6),
                 Location = new Point(0, 23),
                 BackColor = Color.White,
             };
@@ -799,7 +811,7 @@ public sealed class MonitorForm : Form
                 Text = note,
                 AutoSize = false,
                 AutoEllipsis = true,
-                Size = new Size(342, 16),
+                Size = new Size(w, 16),
                 Location = new Point(0, row.Height - 2),
                 ForeColor = TextSecondary,
                 Font = new Font(Font.FontFamily, 7.5F),
@@ -845,29 +857,40 @@ public sealed class MonitorForm : Form
 
     private void BuildMemoryView()
     {
+        // TableLayoutPanel rows (AutoSize) instead of hand-computed pixel offsets — the
+        // manual layout was unstable under DPI scaling (controls overlapped on a real
+        // 150% machine).
         _memoryView.Dock = DockStyle.Fill;
         _memoryView.Padding = new Padding(12, 6, 12, 12);
         _memoryView.BackColor = PageBack;
 
         var card = new CardPanel
         {
-            Location = new Point(12, 6),
-            Size = new Size(386, 536),
+            Dock = DockStyle.Fill,
             BackColor = Color.White,
             Padding = new Padding(14, 12, 14, 12),
         };
 
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            BackColor = Color.White,
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
         _memoryStateLabel.AutoSize = true;
         _memoryStateLabel.Font = new Font(Font, FontStyle.Bold);
-        _memoryStateLabel.Location = new Point(14, 10);
+        _memoryStateLabel.Margin = new Padding(0, 0, 0, 8);
 
         var statsGrid = new TableLayoutPanel
         {
             ColumnCount = 2,
             RowCount = 3,
-            Location = new Point(14, 36),
-            Size = new Size(358, 96),
+            Dock = DockStyle.Top,
+            AutoSize = true,
             BackColor = Color.White,
+            Margin = new Padding(0, 0, 0, 4),
         };
         statsGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         statsGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
@@ -878,12 +901,10 @@ public sealed class MonitorForm : Form
             {
                 var valueLabel = new Label
                 {
-                    AutoSize = false,
-                    Size = new Size(176, 30),
-                    TextAlign = ContentAlignment.MiddleLeft,
+                    AutoSize = true,
                     Font = new Font(Font.FontFamily, 8.5F),
                     ForeColor = SystemColors.ControlText,
-                    Margin = new Padding(0),
+                    Margin = new Padding(0, 3, 4, 3),
                 };
                 _memoryStats[row, col] = valueLabel;
                 statsGrid.Controls.Add(valueLabel, col, row);
@@ -893,19 +914,17 @@ public sealed class MonitorForm : Form
         _memorySampledLabel.AutoSize = true;
         _memorySampledLabel.ForeColor = TextSecondary;
         _memorySampledLabel.Font = new Font(Font.FontFamily, 8F);
-        _memorySampledLabel.Location = new Point(14, 132);
+        _memorySampledLabel.Margin = new Padding(0, 0, 0, 6);
 
-        _trendChart.Location = new Point(14, 154);
-        _trendChart.Size = new Size(358, 326);
-        _trendChart.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
+        _trendChart.Dock = DockStyle.Fill;
+        _trendChart.Margin = new Padding(0, 0, 0, 8);
 
         _taskManagerButton.AutoSize = true;
         _taskManagerButton.FlatStyle = FlatStyle.Flat;
         _taskManagerButton.FlatAppearance.BorderSize = 0;
         _taskManagerButton.BackColor = Color.FromArgb(232, 232, 236);
         _taskManagerButton.Cursor = Cursors.Hand;
-        _taskManagerButton.Location = new Point(14, card.Height - 38);
-        _taskManagerButton.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+        _taskManagerButton.Margin = new Padding(0, 0, 0, 0);
         _taskManagerButton.Click += (_, _) =>
         {
             try
@@ -918,12 +937,18 @@ public sealed class MonitorForm : Form
             }
         };
 
-        card.Controls.Add(_memoryStateLabel);
-        card.Controls.Add(statsGrid);
-        card.Controls.Add(_memorySampledLabel);
-        card.Controls.Add(_trendChart);
-        card.Controls.Add(_taskManagerButton);
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.Controls.Add(_memoryStateLabel, 0, 0);
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.Controls.Add(statsGrid, 0, 1);
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.Controls.Add(_memorySampledLabel, 0, 2);
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.Controls.Add(_trendChart, 0, 3);
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.Controls.Add(_taskManagerButton, 0, 4);
 
+        card.Controls.Add(layout);
         _memoryView.Controls.Add(card);
     }
 
@@ -992,14 +1017,15 @@ public sealed class MonitorForm : Form
 
     private void BuildSettingsView()
     {
+        // TableLayoutPanel with AutoSize rows — the previous hand-computed y offsets
+        // broke under DPI scaling (controls overlapped/vanished on a real 150% machine).
         _settingsView.Dock = DockStyle.Fill;
         _settingsView.Padding = new Padding(12, 6, 12, 12);
         _settingsView.BackColor = PageBack;
 
         var card = new CardPanel
         {
-            Location = new Point(12, 6),
-            Size = new Size(386, 536),
+            Dock = DockStyle.Fill,
             BackColor = Color.White,
             Padding = new Padding(14, 12, 14, 12),
         };
@@ -1007,13 +1033,29 @@ public sealed class MonitorForm : Form
         var scroll = new Panel
         {
             AutoScroll = true,
-            Location = new Point(2, 2),
-            Size = new Size(374, 524),
-            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom,
+            Dock = DockStyle.Fill,
             BackColor = Color.White,
         };
 
-        var y = 0;
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            ColumnCount = 1,
+            BackColor = Color.White,
+            Margin = new Padding(0),
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+        var rowIndex = 0;
+        void AddRow(Control c, int topMargin = 0, int bottomMargin = 6, int leftIndent = 0)
+        {
+            c.Margin = new Padding(leftIndent, topMargin, 0, bottomMargin);
+            c.AutoSize = true;
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            layout.Controls.Add(c, 0, rowIndex++);
+        }
+
         Label Section(string key)
         {
             var label = new Label
@@ -1021,149 +1063,81 @@ public sealed class MonitorForm : Form
                 Text = L(key),
                 AutoSize = true,
                 Font = new Font(Font, FontStyle.Bold),
-                Location = new Point(0, y),
                 ForeColor = SystemColors.ControlText,
             };
-            y += 26;
-            scroll.Controls.Add(label);
+            AddRow(label, topMargin: 8, bottomMargin: 2);
             return label;
         }
 
-        Control Add(Control c, int height, int leftIndent = 0)
+        FlowLayoutPanel RowOf(params Control[] items)
         {
-            c.Location = new Point(leftIndent, y);
-            y += height;
-            scroll.Controls.Add(c);
-            return c;
+            var flow = new FlowLayoutPanel
+            {
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                AutoSize = true,
+                Margin = new Padding(0, 0, 0, 6),
+            };
+            foreach (var item in items) flow.Controls.Add(item);
+            return flow;
         }
 
         // —— 息屏模式（原 OB Dim 设置） ——
         Section("monitor.settings.group_screen");
+        AddRow(new Label { Text = L("settings.work_mode"), AutoSize = true }, bottomMargin: 2);
 
-        var workLabel = Add(new Label
-        {
-            Text = L("settings.work_mode"),
-            AutoSize = true,
-        }, 20);
-        workLabel.Location = new Point(0, y - 20);
-
-        var workRow = new FlowLayoutPanel
-        {
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false,
-            AutoSize = true,
-            Margin = new Padding(0),
-        };
-        foreach (var nud in new[] { _workAc, _workDc })
+        foreach (var nud in new[] { _workAc, _workDc, _awayAc, _awayDc })
         {
             nud.Width = 64;
             nud.Minimum = 0;
             nud.Maximum = 99999;
-            workRow.Controls.Add(nud);
-            workRow.Controls.Add(new Label
-            {
-                Text = " ",
-                AutoSize = true,
-                Margin = new Padding(2, 6, 8, 0),
-            });
         }
-        Add(workRow, 30);
+        AddRow(RowOf(_workAc, _workDc));
 
-        var awayLabel = new Label
-        {
-            Text = L("settings.away_mode"),
-            AutoSize = true,
-            Location = new Point(0, y),
-        };
-        scroll.Controls.Add(awayLabel);
-        y += 20;
-
-        var awayRow = new FlowLayoutPanel
-        {
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false,
-            AutoSize = true,
-            Margin = new Padding(0),
-        };
-        foreach (var nud in new[] { _awayAc, _awayDc })
-        {
-            nud.Width = 64;
-            nud.Minimum = 0;
-            nud.Maximum = 99999;
-            awayRow.Controls.Add(nud);
-            awayRow.Controls.Add(new Label
-            {
-                Text = " ",
-                AutoSize = true,
-                Margin = new Padding(2, 6, 8, 0),
-            });
-        }
-        Add(awayRow, 30);
+        AddRow(new Label { Text = L("settings.away_mode"), AutoSize = true }, bottomMargin: 2);
+        AddRow(RowOf(_awayAc, _awayDc));
 
         // —— 热键 ——
-        y += 6;
         Section("monitor.settings.group_hotkeys");
-
-        var switchHotkeyLabel = new Label { Text = L("settings.hotkey_label"), AutoSize = true, Location = new Point(0, y) };
-        scroll.Controls.Add(switchHotkeyLabel);
-        y += 20;
+        AddRow(new Label { Text = L("settings.hotkey_label"), AutoSize = true }, bottomMargin: 2);
         _switchHotkeyBox.Width = 200;
         _switchHotkeyBox.ReadOnly = true;
-        Add(_switchHotkeyBox, 28);
+        AddRow(_switchHotkeyBox, bottomMargin: 4);
 
-        var popoverHotkeyLabel = new Label { Text = L("monitor.settings.popover_hotkey"), AutoSize = true, Location = new Point(0, y) };
-        scroll.Controls.Add(popoverHotkeyLabel);
-        y += 20;
+        AddRow(new Label { Text = L("monitor.settings.popover_hotkey"), AutoSize = true }, bottomMargin: 2);
         _popoverHotkeyBox.Width = 200;
         _popoverHotkeyBox.ReadOnly = true;
-        Add(_popoverHotkeyBox, 28);
+        AddRow(_popoverHotkeyBox, bottomMargin: 2);
 
-        var winNote = new Label
+        AddRow(new Label
         {
             Text = L("settings.win_note"),
             AutoSize = true,
             ForeColor = TextSecondary,
             Font = new Font(Font.FontFamily, 7.5F),
-            Location = new Point(0, y),
-        };
-        scroll.Controls.Add(winNote);
-        y += 18;
+        }, bottomMargin: 2);
 
         _leftClickCheck.AutoSize = true;
-        Add(_leftClickCheck, 26);
+        AddRow(_leftClickCheck, topMargin: 4);
 
         // —— 通用 ——
-        y += 6;
         Section("monitor.settings.group_general");
-
         _memoryCheck.AutoSize = true;
-        Add(_memoryCheck, 24);
+        AddRow(_memoryCheck);
 
-        var autoStartCheck = new CheckBox { AutoSize = true, Text = L("settings.autostart"), Location = new Point(0, y) };
-        scroll.Controls.Add(autoStartCheck);
-        y += 24;
-        _autoStartCheck = autoStartCheck;
+        _autoStartCheck = new CheckBox { AutoSize = true, Text = L("settings.autostart") };
+        AddRow(_autoStartCheck);
 
-        var languageRow = new FlowLayoutPanel
-        {
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false,
-            AutoSize = true,
-            Margin = new Padding(0),
-        };
-        languageRow.Controls.Add(new Label { Text = L("settings.language"), AutoSize = true, Margin = new Padding(0, 4, 8, 0) });
+        var languageLabel = new Label { Text = L("settings.language"), AutoSize = true, Margin = new Padding(0, 4, 8, 0) };
         _languageBox.DropDownStyle = ComboBoxStyle.DropDownList;
         _languageBox.Width = 110;
         _languageBox.Items.AddRange(new object[] { "中文", "English" });
-        languageRow.Controls.Add(_languageBox);
-        Add(languageRow, 30);
+        AddRow(RowOf(languageLabel, _languageBox));
 
         // —— 监控 ——
-        y += 6;
         Section("monitor.settings.group_monitoring");
-
         _remindersCheck.AutoSize = true;
-        Add(_remindersCheck, 24);
+        AddRow(_remindersCheck);
 
         foreach (ProviderId id in Enum.GetValues<ProviderId>())
         {
@@ -1172,26 +1146,22 @@ public sealed class MonitorForm : Form
                 Name = $"enable_{id}",
                 AutoSize = true,
                 Text = L($"monitor.provider.{id.ToString().ToLowerInvariant()}"),
-                Location = new Point(0, y),
             };
-            scroll.Controls.Add(enable);
-            y += 24;
             _enableChecks[id] = enable;
+            AddRow(enable, topMargin: 4, bottomMargin: 2);
 
             var path = new TextBox
             {
                 Name = $"cliPath_{id}",
                 Width = 340,
-                Location = new Point(20, y),
+                Margin = new Padding(20, 0, 0, 6),
             };
             _toolTip.SetToolTip(path, L("monitor.settings.cli_path"));
-            scroll.Controls.Add(path);
-            y += 30;
             _pathBoxes[id] = path;
+            AddRow(path);
         }
 
         // —— 保存 ——
-        y += 4;
         _saveButton.AutoSize = true;
         _saveButton.FlatStyle = FlatStyle.Flat;
         _saveButton.FlatAppearance.BorderSize = 0;
@@ -1199,16 +1169,15 @@ public sealed class MonitorForm : Form
         _saveButton.ForeColor = Color.White;
         _saveButton.Padding = new Padding(12, 2, 12, 2);
         _saveButton.Cursor = Cursors.Hand;
-        _saveButton.Location = new Point(0, y);
         _saveButton.Click += (_, _) => ApplySettingsFromView();
-        scroll.Controls.Add(_saveButton);
-        y += 30;
+        AddRow(_saveButton, topMargin: 8, bottomMargin: 0);
 
         _saveStatusLabel.AutoSize = true;
         _saveStatusLabel.ForeColor = TextSecondary;
-        _saveStatusLabel.Location = new Point(90, y - 28);
-        scroll.Controls.Add(_saveStatusLabel);
+        _saveStatusLabel.Margin = new Padding(12, 8, 0, 0);
+        AddRow(_saveStatusLabel, bottomMargin: 0);
 
+        scroll.Controls.Add(layout);
         card.Controls.Add(scroll);
         _settingsView.Controls.Add(card);
     }
