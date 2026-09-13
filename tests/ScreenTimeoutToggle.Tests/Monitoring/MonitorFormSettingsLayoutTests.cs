@@ -69,9 +69,9 @@ public class MonitorFormSettingsLayoutTests
                 Assert.Equal(2, boxes.Count);
 
                 // 4. Monitoring checkboxes exist and are visible.
-                Assert.True(all.Any(c => c is CheckBox && c.Text.Contains(Localization("monitor.settings.memory")) && c.Visible));
-                Assert.True(all.Any(c => c is CheckBox && c.Text.Contains(Localization("monitor.settings.reminders")) && c.Visible));
-                Assert.True(all.Any(c => c is CheckBox && c.Text.Contains(Localization("monitor.settings.left_click")) && c.Visible));
+                Assert.Contains(all, c => c is CheckBox && c.Text.Contains(Localization("monitor.settings.memory")) && c.Visible);
+                Assert.Contains(all, c => c is CheckBox && c.Text.Contains(Localization("monitor.settings.reminders")) && c.Visible);
+                Assert.Contains(all, c => c is CheckBox && c.Text.Contains(Localization("monitor.settings.left_click")) && c.Visible);
                 Assert.Equal(3, all.Count(c => c is CheckBox cb && cb.Visible &&
                     (cb.Text == Localization("monitor.provider.codex") ||
                      cb.Text == Localization("monitor.provider.minimax") ||
@@ -79,7 +79,7 @@ public class MonitorFormSettingsLayoutTests
                 Assert.Equal(3, all.Count(c => c is TextBox t && t.Name!.StartsWith("cliPath_") && c.Visible));
 
                 // 5. Save button exists.
-                Assert.True(all.Any(c => c is Button b && b.Text == Localization("monitor.settings.save") && c.Visible));
+                Assert.Contains(all, c => c is Button b && b.Text == Localization("monitor.settings.save") && c.Visible);
 
                 // 6. Inputs do not overlap their SIBLINGS (same parent only — comparing
                 //    bounds across different parents compares different coordinate spaces

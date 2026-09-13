@@ -140,6 +140,10 @@ public sealed class MonitorForm : Form
         UpdateQuotaView();
         UpdateMemoryView();
         LoadSettingsFromCoordinator();
+
+        // The three docked views stack; without this the LAST one (settings) renders on
+        // top and the popover opens on the wrong page.
+        SetView(View.Quota);
     }
 
     private static string L(string key, params object[] args) => LocalizationService.Get(key, args);
@@ -753,7 +757,7 @@ public sealed class MonitorForm : Form
             var badgeLabel = new BadgeLabel
             {
                 Text = badge,
-                Location = new Point(Math.Min(titleLabel.PreferredWidth + 4, 146), 2),
+                Location = new Point(Math.Min(titleLabel.PreferredWidth + 4, Math.Max(0, w - 100)), 2),
                 ForeColor = dimmed ? fore : Color.FromArgb(99, 99, 104),
             };
             row.Controls.Add(badgeLabel);
@@ -766,7 +770,7 @@ public sealed class MonitorForm : Form
                 Text = percentText,
                 AutoSize = false,
                 AutoEllipsis = true,
-                Size = new Size(Math.Max(60, w - 154 - 92), 20),
+                Size = new Size(Math.Max(60, w - 154 - 108), 20),
                 Location = new Point(154, 0),
                 ForeColor = fore,
             };
@@ -779,8 +783,8 @@ public sealed class MonitorForm : Form
             AutoSize = false,
             AutoEllipsis = true,
             TextAlign = ContentAlignment.MiddleRight,
-            Size = new Size(84, 20),
-            Location = new Point(w - 86, 0),
+            Size = new Size(104, 20),
+            Location = new Point(w - 104, 0),
             ForeColor = dimmed ? fore : TextSecondary,
             Font = new Font(Font.FontFamily, 8F),
         };
@@ -788,12 +792,14 @@ public sealed class MonitorForm : Form
 
         if (fraction is { } f && barColor is { } color)
         {
+            // The bar lives under the percent column, like the reference — the reset time
+            // stays unobstructed at the right.
             var bar = new QuotaBar
             {
                 Fraction = f,
                 FillColor = color,
-                Size = new Size(w, 6),
-                Location = new Point(0, 23),
+                Size = new Size(Math.Max(40, w - 154 - 12), 6),
+                Location = new Point(154, 23),
                 BackColor = Color.White,
             };
             row.Controls.Add(bar);
@@ -825,6 +831,9 @@ public sealed class MonitorForm : Form
 
     private void SizeCard(Panel card, FlowLayoutPanel rowsPanel)
     {
+        // Force the flow panel to lay out NOW so its Height reflects the fresh rows —
+        // reading it before layout returns the stale (too tall/short) value.
+        rowsPanel.PerformLayout();
         card.Height = rowsPanel.Location.Y + rowsPanel.Height + 12;
     }
 
@@ -1214,13 +1223,21 @@ public sealed class MonitorForm : Form
         }
         else
         {
-            // Test/detached mode: the app-settings section is inert.
+            // Test/detached mode: the app-settings section is inert but must not LOOK
+            // broken — show the defaults instead of blanks.
             foreach (var nud in new[] { _workAc, _workDc, _awayAc, _awayDc })
             {
                 nud.Enabled = false;
             }
+            _workAc.Value = 0;
+            _workDc.Value = 30;
+            _awayAc.Value = 1;
+            _awayDc.Value = 1;
+            _switchHotkeyBox.SetCaptured(new HotkeyConfig());
             _switchHotkeyBox.Enabled = false;
+            _autoStartCheck.Checked = true;
             _autoStartCheck.Enabled = false;
+            _languageBox.SelectedIndex = 0;
             _languageBox.Enabled = false;
         }
     }
@@ -1628,6 +1645,11 @@ public sealed class MonitorForm : Form
                     new RectangleF(bounds.Left, top, bounds.Width, height),
                     Color.FromArgb(40, Accent), Color.FromArgb(8, Accent), LinearGradientMode.Vertical);
                 g.FillPolygon(fillBrush, [.. fillPoints]);
+
+                // A lone sample (fresh start) would otherwise render as an empty chart.
+                var last = segment[^1];
+                using var dotBrush = new SolidBrush(Accent);
+                g.FillEllipse(dotBrush, last.X - 3, last.Y - 3, 6, 6);
             }
 
             // Axis labels: min/max of THIS series only, in bytes — never a shared unitless axis.
