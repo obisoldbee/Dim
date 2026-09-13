@@ -13,3 +13,6 @@ publish/
 # OS
 Thumbs.db
 .DS_Store
+
+# Local build artifacts and trial packages (never part of the repo)
+release/

@@ -92,6 +92,9 @@ public class TrayApp : ApplicationContext
     /// </remarks>
     private volatile bool _userToggled;
 
+    /// <summary>Hotkey id for the popover toggle — distinct from HotkeyService's id 1.</summary>
+    private const int PopoverHotkeyId = 2;
+
     /// <summary>
     /// Monitoring (quota & memory) coordinator: starts with the app so reminders and memory
     /// sampling run even while no panel is open, and stops only on app exit (spec §4.1:
@@ -99,8 +102,11 @@ public class TrayApp : ApplicationContext
     /// </summary>
     private MonitoringCoordinator? _monitorCoordinator;
 
-    /// <summary>Single panel instance (spec R02): null until first opened, reused afterwards.</summary>
+    /// <summary>Single popover instance (spec R02): null until first opened, reused afterwards.</summary>
     private MonitorForm? _monitorForm;
+
+    /// <summary>Global hotkey that toggles the popover (default Ctrl+Alt+D, monitoring.json configurable).</summary>
+    private GlobalHotkeyService? _popoverHotkey;
 
     /// <summary>
     /// Creates the tray application.
@@ -133,8 +139,10 @@ public class TrayApp : ApplicationContext
         // Load the single unified icon from embedded resources
         _iconApp = LoadIcon("obdim.ico");
 
-        // Create hidden message window for WM_HOTKEY
-        _msgWindow = new HiddenMessageWindow(_hotkeySvc);
+        // Create hidden message window for WM_HOTKEY (mode switch + popover toggle).
+        // The secondary handler reads the popover hotkey field lazily — it is registered
+        // later, once monitoring settings are loaded.
+        _msgWindow = new HiddenMessageWindow(_hotkeySvc, m => _popoverHotkey?.WndProc(m) == true);
         _msgWindow.CreateHandle();
         _hotkeySvc.SetHwnd(_msgWindow.Handle);
 
@@ -264,7 +272,7 @@ public class TrayApp : ApplicationContext
         {
             Name = "switchItem"
         };
-        var monitorItem = new ToolStripMenuItem(LocalizationService.Get("menu.monitor"), null, (_, _) => OpenMonitorPanel())
+        var monitorItem = new ToolStripMenuItem(LocalizationService.Get("menu.monitor"), null, (_, _) => ToggleMonitorPopover())
         {
             Name = "monitorItem"
         };
@@ -300,12 +308,51 @@ public class TrayApp : ApplicationContext
                 new MonitoringCacheService());
             _monitorCoordinator.ReminderFired += OnQuotaReminder;
             _monitorCoordinator.Start();
+
+            RegisterPopoverHotkey(_monitorCoordinator.Settings.PopoverHotkey);
+
             LogService.Info("Monitoring coordinator started");
         }
         catch (Exception ex)
         {
             LogService.Error("Monitoring coordinator failed to start (tray continues without it)", ex);
             _monitorCoordinator = null;
+        }
+    }
+
+    /// <summary>
+    /// Registers the popover toggle hotkey on the tray's message window. Failure is
+    /// non-fatal — the popover stays reachable from the context menu.
+    /// </summary>
+    private void RegisterPopoverHotkey(string? hotkeyString)
+    {
+        try
+        {
+            var parsed = GlobalHotkeyService.ParseHotkeyString(
+                string.IsNullOrWhiteSpace(hotkeyString) ? "Ctrl+Alt+D" : hotkeyString);
+            if (parsed is null)
+            {
+                LogService.Warn($"Invalid popover hotkey string '{hotkeyString}', keeping default Ctrl+Alt+D");
+                parsed = GlobalHotkeyService.ParseHotkeyString("Ctrl+Alt+D")!;
+            }
+
+            _popoverHotkey = new GlobalHotkeyService(_msgWindow.Handle, PopoverHotkeyId);
+            if (_popoverHotkey.Register(parsed))
+            {
+                _popoverHotkey.HotkeyPressed += ToggleMonitorPopover;
+                LogService.Info($"Popover hotkey registered: {parsed.Modifiers}+{parsed.Key}");
+            }
+            else
+            {
+                LogService.Warn($"Popover hotkey {parsed.Modifiers}+{parsed.Key} could not be registered (in use?)");
+                _popoverHotkey.Dispose();
+                _popoverHotkey = null;
+            }
+        }
+        catch (Exception ex)
+        {
+            LogService.Error("Popover hotkey registration failed", ex);
+            _popoverHotkey = null;
         }
     }
 
@@ -322,10 +369,10 @@ public class TrayApp : ApplicationContext
     }
 
     /// <summary>
-    /// Opens the usage &amp; memory panel (or activates the existing one). Never toggles the
-    /// Work/Away mode — this runs from the context menu only.
+    /// Opens the usage &amp; memory popover (or toggles it closed). Never toggles the
+    /// Work/Away mode — this runs from the context menu and the popover hotkey only.
     /// </summary>
-    private void OpenMonitorPanel()
+    private void ToggleMonitorPopover()
     {
         if (_monitorCoordinator is null)
         {
@@ -335,13 +382,17 @@ public class TrayApp : ApplicationContext
             return;
         }
 
+        if (_monitorForm is { IsDisposed: false } && _monitorForm.Visible)
+        {
+            _monitorForm.Close();
+            return;
+        }
+
         if (_monitorForm is null || _monitorForm.IsDisposed)
         {
             _monitorForm = new MonitorForm(_monitorCoordinator);
         }
-        _monitorForm.PlaceNearCursor();
-        _monitorForm.Show();
-        _monitorForm.Activate();
+        _monitorForm.ShowAnchoredToTray(_notify);
     }
 
     /// <summary>
@@ -924,6 +975,7 @@ public class TrayApp : ApplicationContext
             try { _msgWindow.DestroyHandle(); } catch { /* best effort */ }
             try { _syncRoot.Dispose(); } catch { /* best effort */ }
             try { _monitorForm?.Dispose(); } catch { /* best effort */ }
+            try { _popoverHotkey?.Dispose(); } catch { /* best effort */ }
             try { _monitorCoordinator?.Dispose(); } catch { /* best effort */ }
         }
 
@@ -932,12 +984,18 @@ public class TrayApp : ApplicationContext
 
     /// <summary>
     /// A message-only window (HWND_MESSAGE parent) that receives WM_HOTKEY
-    /// and forwards to HotkeyService.
+    /// and forwards to HotkeyService (mode switch) and the popover hotkey.
     /// </summary>
     private class HiddenMessageWindow : NativeWindow
     {
         private readonly HotkeyService _hotkey;
-        public HiddenMessageWindow(HotkeyService hotkey) { _hotkey = hotkey; }
+        private readonly Func<Message, bool>? _secondaryHandler;
+
+        public HiddenMessageWindow(HotkeyService hotkey, Func<Message, bool>? secondaryHandler)
+        {
+            _hotkey = hotkey;
+            _secondaryHandler = secondaryHandler;
+        }
 
         public void CreateHandle()
         {
@@ -952,6 +1010,7 @@ public class TrayApp : ApplicationContext
         protected override void WndProc(ref Message m)
         {
             if (_hotkey.WndProc(m)) return;
+            if (_secondaryHandler?.Invoke(m) == true) return;
             base.WndProc(ref m);
         }
     }

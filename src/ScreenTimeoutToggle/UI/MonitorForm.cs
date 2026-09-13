@@ -1,3 +1,7 @@
+using System.Diagnostics;
+using System.Drawing.Drawing2D;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using OBDim.Monitoring.Models;
 using OBDim.Monitoring.Services;
 using OBDim.Services;
@@ -5,57 +9,98 @@ using OBDim.Services;
 namespace OBDim.UI;
 
 /// <summary>
-/// The "Usage &amp; Memory" panel (spec §4): one instance at a time, opened from the tray
-/// context menu, closed with Esc or the title bar. Closing the form does NOT stop the
-/// coordinator — it keeps sampling and refreshing in the background; only app exit does.
-/// The panel is a plain WinForms tool window: information hierarchy per spec §4.2, no
-/// custom chrome, system DPI scaling, keyboard accessible.
+/// The "Usage &amp; Memory" popover: a borderless panel anchored to its tray icon — the
+/// macOS menu-bar-popover interaction the user asked for (2026-09-13 feedback). One
+/// instance at a time; closes on Esc, on losing activation (click outside), or via the
+/// tray menu toggle. Closing the popover does NOT stop the coordinator — monitoring keeps
+/// running in the background; only app exit does.
+/// <para>
+/// Three views inside one panel: 额度 (quota cards), 内存 (memory stats + trend), 设置
+/// (inline monitoring settings — deliberately NOT a separate dialog). Keyboard: the
+/// global popover hotkey toggles the panel; Tab / ← / → switch 额度↔内存; 1/2/3 jump
+/// directly; Esc closes.
+/// </para>
 /// </summary>
 public sealed class MonitorForm : Form
 {
     private readonly MonitoringCoordinator _coordinator;
 
-    private static string L(string key, params object[] args) => LocalizationService.Get(key, args);
+    private enum View { Quota, Memory, Settings }
 
-    private readonly TabControl _tabs = new();
-    private readonly TabPage _quotaTab = new();
-    private readonly TabPage _memoryTab = new();
-    private readonly Button _refreshAllButton = new();
+    private View _currentView = View.Quota;
+
+    // Header controls
+    private readonly Panel _header = new();
+    private readonly Button _quotaSegment = new();
+    private readonly Button _memorySegment = new();
+    private readonly Button _refreshButton = new();
     private readonly Button _settingsButton = new();
 
-    private readonly FlowLayoutPanel _quotaPanel = new();
-    private readonly Dictionary<ProviderId, GroupBox> _providerGroups = [];
-    private readonly Dictionary<ProviderId, Label> _providerStatusLabels = [];
-    private readonly Dictionary<ProviderId, ListView> _providerLists = [];
-    private readonly Dictionary<ProviderId, Label> _providerExtraLabels = [];
+    // Views
+    private readonly FlowLayoutPanel _quotaView = new();
+    private readonly Panel _memoryView = new();
+    private readonly Panel _settingsView = new();
 
-    // Memory tab controls
+    // Quota cards (one per provider)
+    private readonly Dictionary<ProviderId, Panel> _cards = [];
+    private readonly Dictionary<ProviderId, Label> _cardTitles = [];
+    private readonly Dictionary<ProviderId, BadgeLabel> _cardBadges = [];
+    private readonly Dictionary<ProviderId, Label> _cardStates = [];
+    private readonly Dictionary<ProviderId, FlowLayoutPanel> _cardRows = [];
+
+    // Memory view controls
+    private readonly Label _memoryStateLabel = new();
+    private readonly Label _memorySampledLabel = new();
     private readonly Label _memoryPhysicalLabel = new();
     private readonly Label _memoryAvailableLabel = new();
     private readonly Label _memoryCommitLabel = new();
     private readonly Label _memorySignalLabel = new();
-    private readonly Label _memorySampledLabel = new();
-    private readonly Label _memoryStateLabel = new();
     private readonly MemoryTrendChart _trendChart = new();
+    private readonly Button _taskManagerButton = new();
+
+    // Settings view controls
+    private readonly Dictionary<ProviderId, CheckBox> _enableChecks = [];
+    private readonly Dictionary<ProviderId, TextBox> _pathBoxes = [];
+    private readonly CheckBox _memoryCheck = new();
+    private readonly CheckBox _remindersCheck = new();
+    private readonly Label _hotkeyHint = new();
+    private readonly Button _saveButton = new();
+    private readonly Label _saveStatusLabel = new();
+
+    private readonly ToolTip _toolTip = new();
+
+    private static readonly Color Accent = Color.FromArgb(0, 122, 255);     // macOS blue
+    private static readonly Color BarGreen = Color.FromArgb(52, 199, 89);
+    private static readonly Color BarAmber = Color.FromArgb(255, 159, 10);
+    private static readonly Color BarRed = Color.FromArgb(255, 59, 48);
+    private static readonly Color CardBorder = Color.FromArgb(229, 229, 234);
+    private static readonly Color PageBack = Color.FromArgb(246, 246, 248);
 
     public MonitorForm(MonitoringCoordinator coordinator)
     {
         _coordinator = coordinator;
 
-        Text = L("monitor.title");
-        FormBorderStyle = FormBorderStyle.FixedSingle;
-        MaximizeBox = false;
-        MinimizeBox = false;
+        FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
         KeyPreview = true;
         AutoScaleMode = AutoScaleMode.Dpi;
+        DoubleBuffered = true;
+        BackColor = PageBack;
         Font = new Font("Microsoft YaHei UI", 9F);
+        ClientSize = new Size(400, 560);
 
-        ClientSize = new Size(560, 640);
+        BuildHeader();
+        BuildQuotaView();
+        BuildMemoryView();
+        BuildSettingsView();
 
-        BuildLayout();
-        ApplyLocalization();
+        // Dock priority: the fill views must sit EARLIER in the collection than the Top
+        // header, so the header reserves its strip first and the views take the rest.
+        Controls.Add(_quotaView);
+        Controls.Add(_memoryView);
+        Controls.Add(_settingsView);
+        Controls.Add(_header);
 
         _coordinator.QuotaStateChanged += OnCoordinatorChanged;
         _coordinator.MemoryStateChanged += OnCoordinatorChanged;
@@ -66,182 +111,49 @@ public sealed class MonitorForm : Form
             _coordinator.QuotaStateChanged -= OnCoordinatorChanged;
             _coordinator.MemoryStateChanged -= OnCoordinatorChanged;
             _coordinator.ReminderFired -= OnReminderFired;
+            _toolTip.Dispose();
         };
 
-        RefreshQuotaTab();
-        RefreshMemoryTab();
+        ApplyLocalization();
+        UpdateQuotaView();
+        UpdateMemoryView();
     }
 
-    private static string L_single(string key) => LocalizationService.Get(key);
+    private static string L(string key, params object[] args) => LocalizationService.Get(key, args);
 
-    private void BuildLayout()
+    // ---------- chrome ----------
+
+    /// <summary>Drop shadow for the borderless window (classic CS_DROPSHADOW).</summary>
+    protected override CreateParams CreateParams
     {
-        var header = new FlowLayoutPanel
+        get
         {
-            FlowDirection = FlowDirection.LeftToRight,
-            Dock = DockStyle.Top,
-            Height = 40,
-            Padding = new Padding(8, 8, 8, 0),
-            WrapContents = false,
-        };
-        _refreshAllButton.Name = "refreshAllButton";
-        _refreshAllButton.AutoSize = true;
-        _refreshAllButton.Click += (_, _) => _coordinator.RequestManualRefreshAll();
-        _settingsButton.Name = "monitorSettingsButton";
-        _settingsButton.AutoSize = true;
-        _settingsButton.Click += (_, _) => OpenMonitoringSettings();
-        header.Controls.Add(_refreshAllButton);
-        header.Controls.Add(_settingsButton);
-
-        _tabs.Dock = DockStyle.Fill;
-        _tabs.Name = "monitorTabs";
-        _quotaTab.Name = "quotaTab";
-        _memoryTab.Name = "memoryTab";
-        _tabs.TabPages.Add(_quotaTab);
-        _tabs.TabPages.Add(_memoryTab);
-
-        BuildQuotaTab();
-        BuildMemoryTab();
-
-        Controls.Add(_tabs);
-        Controls.Add(header);
-    }
-
-    private void BuildQuotaTab()
-    {
-        _quotaPanel.Dock = DockStyle.Fill;
-        _quotaPanel.FlowDirection = FlowDirection.TopDown;
-        _quotaPanel.WrapContents = false;
-        _quotaPanel.AutoScroll = true;
-        _quotaPanel.Padding = new Padding(8);
-
-        foreach (ProviderId id in Enum.GetValues<ProviderId>())
-        {
-            var group = new GroupBox
-            {
-                Name = $"providerGroup_{id}",
-                Width = 520,
-                Height = 150,
-                Padding = new Padding(8),
-            };
-
-            var status = new Label
-            {
-                Name = $"providerStatus_{id}",
-                AutoSize = true,
-                Location = new Point(10, 22),
-                MaximumSize = new Size(490, 0),
-            };
-
-            var list = new ListView
-            {
-                Name = $"providerList_{id}",
-                View = View.Details,
-                FullRowSelect = true,
-                HideSelection = true,
-                Location = new Point(10, 46),
-                Size = new Size(490, 72),
-                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom,
-            };
-            list.Columns.Add("window", 220);
-            list.Columns.Add("quota", 160);
-            list.Columns.Add("reset", 108);
-
-            var extra = new Label
-            {
-                Name = $"providerExtra_{id}",
-                AutoSize = true,
-                Location = new Point(10, 122),
-                MaximumSize = new Size(490, 0),
-                ForeColor = SystemColors.GrayText,
-                Anchor = AnchorStyles.Bottom | AnchorStyles.Left,
-            };
-
-            group.Controls.Add(status);
-            group.Controls.Add(list);
-            group.Controls.Add(extra);
-
-            _providerGroups[id] = group;
-            _providerStatusLabels[id] = status;
-            _providerLists[id] = list;
-            _providerExtraLabels[id] = extra;
-            _quotaPanel.Controls.Add(group);
+            var cp = base.CreateParams;
+            cp.ClassStyle |= 0x00020000; // CS_DROPSHADOW
+            return cp;
         }
-
-        _quotaTab.Controls.Add(_quotaPanel);
     }
 
-    private void BuildMemoryTab()
+    protected override void OnHandleCreated(EventArgs e)
     {
-        var layout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = 6,
-            Padding = new Padding(10),
-            AutoSize = true,
-        };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        base.OnHandleCreated(e);
+        TryEnableRoundedCorners();
+    }
 
-        void AddRow(Control left, Control right, bool fill = false)
+    /// <summary>Windows 11 rounded corners; gracefully does nothing on older systems.</summary>
+    private void TryEnableRoundedCorners()
+    {
+        try
         {
-            var row = layout.RowCount;
-            layout.RowStyles.Add(new RowStyle(fill ? SizeType.Percent : SizeType.AutoSize, fill ? 100 : 0));
-            left.AutoSize = true;
-            right.AutoSize = !fill;
-            right.Anchor = AnchorStyles.Left;
-            layout.Controls.Add(left, 0, row);
-            layout.Controls.Add(right, 1, row);
+            const int dwmwaWindowCornerPreference = 33;
+            const int dwmwcpRounded = 33;
+            var preference = dwmwcpRounded;
+            DwmSetWindowAttribute(Handle, dwmwaWindowCornerPreference, ref preference, sizeof(int));
         }
-
-        _memoryPhysicalLabel.Name = "memoryPhysicalLabel";
-        _memoryAvailableLabel.Name = "memoryAvailableLabel";
-        _memoryCommitLabel.Name = "memoryCommitLabel";
-        _memorySignalLabel.Name = "memorySignalLabel";
-        _memorySampledLabel.Name = "memorySampledLabel";
-        _memoryStateLabel.Name = "memoryStateLabel";
-
-        AddRow(new Label { Text = L("monitor.memory_physical"), AutoSize = true }, _memoryPhysicalLabel);
-        AddRow(new Label { AutoSize = true }, _memoryAvailableLabel);
-        AddRow(new Label { Text = L("monitor.memory_commit"), AutoSize = true }, _memoryCommitLabel);
-        AddRow(new Label { Text = L("monitor.memory_low_signal"), AutoSize = true }, _memorySignalLabel);
-        AddRow(new Label { Text = L("monitor.memory_sampled_label"), AutoSize = true }, _memorySampledLabel);
-        AddRow(new Label { Text = L("monitor.memory_state_label"), AutoSize = true }, _memoryStateLabel);
-
-        _trendChart.Dock = DockStyle.Fill;
-        _trendChart.MinimumSize = new Size(500, 260);
-
-        var host = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1 };
-        host.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        host.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        host.Controls.Add(layout, 0, 0);
-        host.Controls.Add(_trendChart, 0, 1);
-        _memoryTab.Controls.Add(host);
-    }
-
-    private void OpenMonitoringSettings()
-    {
-        using var form = new MonitoringSettingsForm(_coordinator);
-        form.ShowDialog(this);
-    }
-
-    private void OnCoordinatorChanged()
-    {
-        if (IsDisposed) return;
-        BeginInvoke(() =>
+        catch (DllNotFoundException)
         {
-            if (IsDisposed) return;
-            RefreshQuotaTab();
-            RefreshMemoryTab();
-        });
-    }
-
-    private void OnReminderFired(QuotaReminderEvent evt)
-    {
-        // Reminders surface as tray balloons (owned by TrayApp); the panel just refreshes.
-        if (IsDisposed) return;
-        BeginInvoke(RefreshQuotaTab);
+            // pre-Win11 without dwmapi export — square corners are fine.
+        }
     }
 
     protected override void OnKeyDown(KeyEventArgs e)
@@ -254,166 +166,880 @@ public sealed class MonitorForm : Form
         base.OnKeyDown(e);
     }
 
-    /// <summary>Places the window inside the working area of the screen the cursor is on.</summary>
-    public void PlaceNearCursor()
+    /// <summary>Popover behaviour: any loss of activation (click outside) dismisses the panel.</summary>
+    protected override void OnDeactivate(EventArgs e)
     {
-        var screen = Screen.FromPoint(Cursor.Position).WorkingArea;
-        var x = Math.Min(Cursor.Position.X + 12, screen.Right - Width);
-        var y = Math.Min(Cursor.Position.Y + 12, screen.Bottom - Height);
-        Location = new Point(Math.Max(screen.Left, x), Math.Max(screen.Top, y));
+        base.OnDeactivate(e);
+        if (Visible) Close();
     }
 
-    private void RefreshQuotaTab()
+    /// <summary>Tab / ← / → switch 额度↔内存; 1/2/3 jump to a view directly.</summary>
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
-        var states = _coordinator.GetDisplayStates();
-        foreach (var state in states)
+        switch (keyData)
         {
-            UpdateProviderGroup(state);
+            case Keys.Tab or Keys.Right or Keys.Left:
+                SetView(_currentView == View.Quota ? View.Memory : View.Quota);
+                return true;
+            case Keys.D1 or Keys.NumPad1:
+                SetView(View.Quota);
+                return true;
+            case Keys.D2 or Keys.NumPad2:
+                SetView(View.Memory);
+                return true;
+            case Keys.D3 or Keys.NumPad3:
+                SetView(View.Settings);
+                return true;
         }
+        return base.ProcessCmdKey(ref msg, keyData);
     }
 
-    private void UpdateProviderGroup(ProviderDisplayState state)
+    /// <summary>
+    /// Positions the popover against its tray icon (Shell_NotifyIconGetRect via the
+    /// NotifyIcon's internal id/window — reflection with a cursor-based fallback) and
+    /// shows it. Re-anchoring happens on every open, so a moved taskbar is always correct.
+    /// </summary>
+    public void ShowAnchoredToTray(NotifyIcon trayIcon)
     {
-        var group = _providerGroups[state.Provider];
-        var status = _providerStatusLabels[state.Provider];
-        var list = _providerLists[state.Provider];
-        var extra = _providerExtraLabels[state.Provider];
+        var anchor = TryGetTrayIconRect(trayIcon, out var iconRect)
+            ? ComputeAnchorFromIcon(iconRect)
+            : ComputeAnchorFromCursor();
+        Location = anchor;
+        TopMost = true;
+        Show();
+        Activate();
+    }
 
-        group.Text = L($"monitor.provider.{state.Provider.ToString().ToLowerInvariant()}");
+    private Point ComputeAnchorFromIcon(Rect iconRect)
+    {
+        var screen = Screen.FromRectangle(new Rectangle(iconRect.Left, iconRect.Top,
+            Math.Max(1, iconRect.Right - iconRect.Left), Math.Max(1, iconRect.Bottom - iconRect.Top)));
+        var work = screen.WorkingArea;
+        const int gap = 4;
 
-        // Status is multi-dimensional on purpose (spec §5.3): refresh state, failure and
-        // freshness are independent facts and can all be true at once.
-        var parts = new List<string>();
-        if (!state.Enabled)
+        int x, y;
+        if (iconRect.Top >= work.Bottom - 8)
         {
-            parts.Add(L("monitor.state_disabled"));
+            // taskbar at the bottom → popover floats above the icon, right edges aligned
+            x = iconRect.Right - Width;
+            y = iconRect.Top - Height - gap;
         }
-        else if (state.Refreshing)
+        else if (iconRect.Bottom <= work.Top + 8)
         {
-            parts.Add(L("monitor.state_refreshing"));
+            // taskbar at the top → popover hangs below the icon
+            x = iconRect.Right - Width;
+            y = iconRect.Bottom + gap;
         }
-
-        var snapshot = state.LastGood;
-        var hasFailure = state.LastAttempt is { HasError: true };
-        if (hasFailure)
+        else if (iconRect.Left >= work.Right - 8)
         {
-            var attempt = state.LastAttempt!;
-            var errorText = L(ErrorKeyFor(attempt.Error));
-            parts.Add($"{L("monitor.state_error")} · {errorText}");
-        }
-
-        if (state.Stale)
-        {
-            parts.Add(L("monitor.state_stale"));
-        }
-        else if (snapshot is not null && !hasFailure)
-        {
-            parts.Add(snapshot.IsPartial ? L("monitor.state_partial") : L("monitor.state_ok"));
-        }
-
-        if (state.PausedUntilUserRetry && state.Enabled)
-        {
-            parts.Add(L("monitor.paused"));
-        }
-
-        var successPart = snapshot?.SucceededAtUtc is { } success
-            ? L("monitor.last_success", FormatTime(success))
-            : null;
-        status.Text = parts.Count == 0
-            ? L("monitor.state_no_data_yet")
-            : string.Join(" · ", parts) + (successPart is null ? "" : $" · {successPart}");
-
-        list.BeginUpdate();
-        list.Items.Clear();
-
-        if (!state.Enabled)
-        {
-            AddSimpleRow(list, L("monitor.state_disabled"), "", "");
-        }
-        else if (snapshot is null)
-        {
-            AddSimpleRow(list,
-                hasFailure ? L("monitor.state_error") : L("monitor.state_no_data_yet"),
-                hasFailure ? L(ErrorKeyFor(state.LastAttempt!.Error)) : "",
-                "");
+            // taskbar on the right → popover to the left of the icon
+            x = iconRect.Left - Width - gap;
+            y = iconRect.Top;
         }
         else
         {
-            FillSnapshotRows(list, snapshot);
+            // taskbar on the left → popover to the right of the icon
+            x = iconRect.Right + gap;
+            y = iconRect.Top;
         }
-        list.EndUpdate();
 
-        extra.Text = BuildExtraText(state);
-        extra.Visible = extra.Text.Length > 0;
-        list.Height = Math.Max(50, list.Items.Count * 19 + 26);
-        extra.Location = new Point(10, list.Bottom + 4);
-        group.Height = (extra.Visible ? extra.Bottom + 10 : list.Bottom + 12);
+        return ClampToWorkArea(x, y, work);
     }
 
-    private void FillSnapshotRows(ListView list, ProviderSnapshot snapshot)
+    private Point ComputeAnchorFromCursor()
     {
-        var anyRow = false;
+        var screen = Screen.FromPoint(Cursor.Position);
+        var work = screen.WorkingArea;
+        var x = Cursor.Position.X + 12 - Width;
+        var y = work.Bottom - Height - 8;
+        return ClampToWorkArea(x, y, work);
+    }
+
+    private Point ClampToWorkArea(int x, int y, Rectangle work)
+    {
+        const int margin = 8;
+        return new Point(
+            Math.Clamp(x, work.Left + margin, Math.Max(work.Left + margin, work.Right - Width - margin)),
+            Math.Clamp(y, work.Top + margin, Math.Max(work.Top + margin, work.Bottom - Height - margin)));
+    }
+
+    private static bool TryGetTrayIconRect(NotifyIcon trayIcon, out Rect rect)
+    {
+        rect = default;
+        try
+        {
+            // NotifyIcon keeps its Shell_NotfiyIcon id and message window privately; the
+            // shell can hand back the on-screen rect through them. Any drift in internals
+            // degrades to the cursor fallback — never a crash.
+            var idField = typeof(NotifyIcon).GetField("id", BindingFlags.NonPublic | BindingFlags.Instance);
+            var windowField = typeof(NotifyIcon).GetField("window", BindingFlags.NonPublic | BindingFlags.Instance);
+            if (idField?.GetValue(trayIcon) is not int id) return false;
+            if (windowField?.GetValue(trayIcon) is not NativeWindow window || window.Handle == IntPtr.Zero) return false;
+
+            var identifier = new NotifyIconIdentifier
+            {
+                CbSize = Marshal.SizeOf<NotifyIconIdentifier>(),
+                HWnd = window.Handle,
+                UId = (uint)id,
+                GuidItem = Guid.Empty,
+            };
+            return ShellNotifyIconGetRect(ref identifier, out rect) == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    // ---------- header ----------
+
+    private void BuildHeader()
+    {
+        // Explicit size before docking so right-anchored children compute their offsets
+        // against the final width.
+        _header.Size = new Size(400, 52);
+        _header.Dock = DockStyle.Top;
+        _header.BackColor = PageBack;
+
+        _quotaSegment.AutoSize = false;
+        _quotaSegment.Size = new Size(62, 28);
+        _quotaSegment.Location = new Point(12, 11);
+        _quotaSegment.FlatStyle = FlatStyle.Flat;
+        _quotaSegment.FlatAppearance.BorderSize = 0;
+        _quotaSegment.Click += (_, _) => SetView(View.Quota);
+
+        _memorySegment.AutoSize = false;
+        _memorySegment.Size = new Size(62, 28);
+        _memorySegment.Location = new Point(74, 11);
+        _memorySegment.FlatStyle = FlatStyle.Flat;
+        _memorySegment.FlatAppearance.BorderSize = 0;
+        _memorySegment.Click += (_, _) => SetView(View.Memory);
+
+        _refreshButton.AutoSize = false;
+        _refreshButton.Size = new Size(32, 30);
+        _refreshButton.Location = new Point(316, 9);
+        _refreshButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _refreshButton.FlatStyle = FlatStyle.Flat;
+        _refreshButton.FlatAppearance.BorderSize = 0;
+        _refreshButton.BackColor = PageBack;
+        _refreshButton.Font = new Font("Segoe UI Symbol", 12F);
+        _refreshButton.Click += (_, _) => _coordinator.RequestManualRefreshAll();
+        _refreshButton.AccessibleName = L("monitor.refresh_all");
+        _toolTip.SetToolTip(_refreshButton, L("monitor.refresh_all"));
+
+        _settingsButton.AutoSize = false;
+        _settingsButton.Size = new Size(32, 30);
+        _settingsButton.Location = new Point(356, 9);
+        _settingsButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _settingsButton.FlatStyle = FlatStyle.Flat;
+        _settingsButton.FlatAppearance.BorderSize = 0;
+        _settingsButton.BackColor = PageBack;
+        _settingsButton.Font = new Font("Segoe UI Symbol", 11F);
+        _settingsButton.Click += (_, _) => SetView(View.Settings);
+        _settingsButton.AccessibleName = L("monitor.settings");
+        _toolTip.SetToolTip(_settingsButton, L("monitor.settings"));
+
+        _header.Controls.Add(_quotaSegment);
+        _header.Controls.Add(_memorySegment);
+        _header.Controls.Add(_refreshButton);
+        _header.Controls.Add(_settingsButton);
+
+        // The gray track behind the two segment buttons.
+        _header.Paint += (_, e) =>
+        {
+            var segRect = new Rectangle(8, 8, 132, 34);
+            using var brush = new SolidBrush(Color.FromArgb(232, 232, 236));
+            using var path = RoundedPath(segRect, 8);
+            e.Graphics.FillPath(brush, path);
+        };
+    }
+
+    private void SetView(View view)
+    {
+        _currentView = view;
+        _quotaView.Visible = view == View.Quota;
+        _memoryView.Visible = view == View.Memory;
+        _settingsView.Visible = view == View.Settings;
+
+        StyleSegment(_quotaSegment, view == View.Quota);
+        StyleSegment(_memorySegment, view == View.Memory);
+        _settingsButton.Text = view == View.Settings ? "✕" : "⚙";
+
+        if (view == View.Quota) UpdateQuotaView();
+        if (view == View.Memory) UpdateMemoryView();
+        if (view == View.Settings) LoadSettingsFromCoordinator();
+    }
+
+    private void StyleSegment(Button segment, bool selected)
+    {
+        segment.BackColor = selected ? Color.White : PageBack;
+        segment.Invalidate();
+    }
+
+    private static GraphicsPath RoundedPath(Rectangle rect, int radius)
+    {
+        var path = new GraphicsPath();
+        var d = radius * 2;
+        path.AddArc(rect.Left, rect.Top, d, d, 180, 90);
+        path.AddArc(rect.Right - d, rect.Top, d, d, 270, 90);
+        path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
+        path.AddArc(rect.Left, rect.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+
+    // ---------- quota view ----------
+
+    private void BuildQuotaView()
+    {
+        _quotaView.Dock = DockStyle.Fill;
+        _quotaView.FlowDirection = FlowDirection.TopDown;
+        _quotaView.WrapContents = false;
+        _quotaView.AutoScroll = true;
+        _quotaView.Padding = new Padding(10, 4, 10, 10);
+
+        foreach (ProviderId id in Enum.GetValues<ProviderId>())
+        {
+            var card = new CardPanel
+            {
+                Width = 372,
+                BackColor = Color.White,
+                Padding = new Padding(12, 10, 12, 10),
+                Margin = new Padding(0, 0, 0, 10),
+            };
+
+            var title = new Label
+            {
+                AutoSize = true,
+                Font = new Font(Font, FontStyle.Bold),
+                Location = new Point(12, 10),
+                Text = L($"monitor.provider.{id.ToString().ToLowerInvariant()}"),
+            };
+            var badge = new BadgeLabel
+            {
+                Location = new Point(title.Right + 8, 12),
+            };
+            var state = new Label
+            {
+                AutoSize = true,
+                ForeColor = Color.FromArgb(142, 142, 147),
+                Location = new Point(12, 32),
+            };
+            var rows = new FlowLayoutPanel
+            {
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = false,
+                AutoSize = true,
+                Location = new Point(4, 54),
+                Width = 348,
+                Margin = new Padding(0),
+            };
+
+            card.Controls.Add(title);
+            card.Controls.Add(badge);
+            card.Controls.Add(state);
+            card.Controls.Add(rows);
+            card.Tag = (title, badge, state, rows);
+
+            _cards[id] = card;
+            _cardTitles[id] = title;
+            _cardBadges[id] = badge;
+            _cardStates[id] = state;
+            _cardRows[id] = rows;
+            _quotaView.Controls.Add(card);
+        }
+    }
+
+    private void OnCoordinatorChanged()    {
+        if (IsDisposed) return;
+        BeginInvoke(() =>
+        {
+            if (IsDisposed) return;
+            UpdateQuotaView();
+            if (_currentView == View.Memory) UpdateMemoryView();
+        });
+    }
+
+    private void OnReminderFired(QuotaReminderEvent evt)
+    {
+        // Reminders surface as tray balloons (owned by TrayApp); the panel just refreshes.
+        if (IsDisposed) return;
+        BeginInvoke(UpdateQuotaView);
+    }
+
+    private void UpdateQuotaView()
+    {
+        if (IsDisposed) return;
+        foreach (var state in _coordinator.GetDisplayStates())
+        {
+            UpdateCard(state);
+        }
+    }
+
+    private void UpdateCard(ProviderDisplayState state)
+    {
+        var card = _cards[state.Provider];
+        var title = _cardTitles[state.Provider];
+        var badge = _cardBadges[state.Provider];
+        var statusLabel = _cardStates[state.Provider];
+        var rowsPanel = _cardRows[state.Provider];
+
+        var snapshot = state.LastGood;
+        var hasFailure = state.LastAttempt is { HasError: true };
+
+        // Status line: refresh state, failure and freshness are independent facts (§5.3).
+        var parts = new List<string>();
+        if (!state.Enabled) parts.Add(L("monitor.state_disabled"));
+        if (state.Refreshing) parts.Add(L("monitor.state_refreshing"));
+        if (hasFailure) parts.Add(L(ErrorKeyFor(state.LastAttempt!.Error)));
+        if (state.Stale) parts.Add(L("monitor.state_stale"));
+        else if (snapshot is not null && !hasFailure && !state.Refreshing) parts.Add(L("monitor.state_ok"));
+        if (state.PausedUntilUserRetry && state.Enabled) parts.Add(L("monitor.paused_short"));
+
+        var updated = snapshot?.SucceededAtUtc is { } s ? L("monitor.updated", FormatTime(s)) : null;
+        var statusBits = new List<string>();
+        if (updated is not null) statusBits.Add(updated);
+        statusBits.AddRange(parts);
+        statusLabel.Text = statusBits.Count == 0 ? L("monitor.state_no_data_yet") : string.Join(" · ", statusBits);
+        statusLabel.ForeColor = hasFailure ? BarRed : Color.FromArgb(142, 142, 147);
+
+        badge.Text = snapshot?.Buckets.FirstOrDefault(b => b.Tier is not null)?.Tier ?? "";
+        badge.Visible = badge.Text.Length > 0;
+        // Position the badge after the (autosized) title once the text is known.
+        badge.Left = title.Left + title.PreferredWidth + 8;
+
+        rowsPanel.Controls.Clear();
+        rowsPanel.Controls.OfType<Control>().ToList().ForEach(c => c.Dispose());
+
+        var dimmed = state.Stale || hasFailure;
+
+        if (!state.Enabled)
+        {
+            rowsPanel.Controls.Add(MakeRow(L("monitor.state_disabled_hint"), "", null, null, null, null, dimmed: true));
+            SizeCard(card, rowsPanel, extraRows: 0);
+            return;
+        }
+
+        if (snapshot is null)
+        {
+            rowsPanel.Controls.Add(MakeRow(
+                hasFailure ? L(ErrorKeyFor(state.LastAttempt!.Error)) : L("monitor.state_no_data_yet"),
+                "", null, null, null, null, dimmed: true));
+            SizeCard(card, rowsPanel, extraRows: 0);
+            return;
+        }
+
+        var windowKeyCounts = snapshot.Buckets
+            .SelectMany(b => b.Windows)
+            .GroupBy(w => w.SourceKey)
+            .ToDictionary(g => g.Key, g => g.Count());
+
         foreach (var bucket in snapshot.Buckets)
         {
             if (bucket.Error is not null)
             {
-                AddSimpleRow(list, bucket.DisplayName ?? bucket.SourceKey, L("monitor.bucket_error"), "");
-                anyRow = true;
+                rowsPanel.Controls.Add(MakeRow(bucket.DisplayName ?? bucket.SourceKey, "", null, null, null,
+                    null, dimmed: true, note: L("monitor.bucket_error")));
                 continue;
             }
-
             if (bucket.Subscribed == false)
             {
-                AddSimpleRow(list, bucket.DisplayName ?? bucket.SourceKey, L("monitor.no_subscription"), "");
-                anyRow = true;
+                rowsPanel.Controls.Add(MakeRow(bucket.DisplayName ?? bucket.SourceKey, L("monitor.no_subscription"),
+                    null, null, null, null, dimmed: true));
                 continue;
             }
-
             if (bucket.Windows.Count == 0)
             {
-                AddSimpleRow(list, bucket.DisplayName ?? bucket.SourceKey, L("monitor.not_returned"), "");
-                anyRow = true;
+                rowsPanel.Controls.Add(MakeRow(bucket.DisplayName ?? bucket.SourceKey, L("monitor.not_returned"),
+                    null, null, null, null, dimmed: true));
                 continue;
             }
 
             foreach (var window in bucket.Windows)
             {
-                list.Items.Add(new ListViewItem([
-                    RowTitle(bucket, window),
-                    QuotaText(window),
-                    ResetText(window),
-                ]));
-                anyRow = true;
-            }
-        }
+                var needsBucketPrefix = windowKeyCounts.GetValueOrDefault(window.SourceKey) > 1;
+                var titleText = needsBucketPrefix
+                    ? $"{ShortName(bucket.DisplayName ?? bucket.SourceKey)} {LocalizeWindowKey(window.SourceKey, window.Label)}"
+                    : LocalizeWindowKey(window.SourceKey, window.Label);
+                var badgeText = needsBucketPrefix ? "" : ShortName(bucket.DisplayName ?? bucket.SourceKey, maxLength: 4);
 
-        if (!anyRow)
-        {
-            AddSimpleRow(list, L("monitor.not_returned"), "", "");
+                double? fraction = null;
+                Color? barColor = null;
+                var percentText = "";
+
+                if (!window.HasAnyQuotaField)
+                {
+                    percentText = L("monitor.not_provided");
+                }
+                else if (window.PercentOutOfRange || window.UsedPercent is < 0 or > 100)
+                {
+                    percentText = L("monitor.percent_out_of_range",
+                        FormatPercent((window.UsedPercent ?? window.RemainingPercent) ?? 0));
+                }
+                else if (window.RemainingPercent is { } remaining)
+                {
+                    percentText = L("monitor.percent_remaining", FormatPercent(remaining));
+                    fraction = Math.Clamp(remaining / 100.0, 0, 1);
+                    barColor = remaining switch
+                    {
+                        <= ReminderEvaluator.Level2RemainingPercent => BarRed,
+                        <= ReminderEvaluator.Level1RemainingPercent => BarAmber,
+                        _ => BarGreen,
+                    };
+                }
+
+                if (window.UsedText is not null && window.TotalText is not null)
+                {
+                    percentText += " · " + L("monitor.counts", window.UsedText, window.TotalText);
+                }
+
+                rowsPanel.Controls.Add(MakeRow(titleText, badgeText, percentText, fraction, barColor,
+                    ResetText(window), dimmed));
+            }
         }
 
         if (snapshot.ResetCredits is { } credits)
         {
-            AddSimpleRow(list, L("monitor.reset_credits", credits.AvailableCount),
-                DescribeCreditDetails(credits), "");
+            var detail = credits.Details is { Count: > 0 }
+                ? DescribeCreditDetails(credits)
+                : credits.Details is null ? L("monitor.reset_credits_count_only") : L("monitor.reset_credits_empty_details");
+            rowsPanel.Controls.Add(MakeRow(
+                L("monitor.reset_credits", credits.AvailableCount),
+                L("monitor.badge.reset_credit"),
+                null, null, null,
+                detail, dimmed: false, note: credits.Details is { Count: > 0 } ? detail : null));
+        }
+
+        SizeCard(card, rowsPanel, extraRows: 0);
+    }
+
+    private static string ShortName(string name, int maxLength = 12) =>
+        name.Length <= maxLength ? name : name[..(maxLength - 1)] + "…";
+
+    private static string DescribeCreditDetails(ResetCreditSummary credits)
+    {
+        if (credits.Details is null) return L("monitor.reset_credits_count_only");
+        if (credits.Details.Count == 0) return L("monitor.reset_credits_empty_details");
+        return string.Join("; ", credits.Details.Select(c =>
+        {
+            var title = c.Title;
+            if (c.ExpiresAtUtc is { } expires)
+            {
+                title += " " + L("monitor.reset_credit_expires", FormatTime(expires));
+            }
+            if (c.Status is { } status && status != "available")
+            {
+                title += $" [{status}]";
+            }
+            return title;
+        }));
+    }
+
+    private Control MakeRow(string title, string badge, string? percentText, double? fraction,
+        Color? barColor, string? rightText, bool dimmed, string? note = null)
+    {
+        var row = new Panel
+        {
+            AutoSize = true,
+            Width = 348,
+            Margin = new Padding(0, 4, 0, 4),
+            BackColor = Color.White,
+        };
+
+        var fore = dimmed ? Color.FromArgb(142, 142, 147) : SystemColors.ControlText;
+
+        var titleLabel = new Label
+        {
+            Text = title,
+            AutoSize = false,
+            AutoEllipsis = true,
+            Location = new Point(0, 0),
+            Size = new Size(128, 20),
+            ForeColor = fore,
+        };
+        row.Controls.Add(titleLabel);
+
+        if (badge.Length > 0)
+        {
+            var badgeLabel = new BadgeLabel
+            {
+                Text = badge,
+                Location = new Point(Math.Min(titleLabel.PreferredWidth + 4, 130), 2),
+                ForeColor = fore,
+            };
+            row.Controls.Add(badgeLabel);
+        }
+
+        var rightLabel = new Label
+        {
+            Text = rightText ?? "",
+            AutoSize = false,
+            AutoEllipsis = true,
+            TextAlign = ContentAlignment.MiddleRight,
+            Size = new Size(120, 20),
+            Location = new Point(228, 0),
+            ForeColor = dimmed ? fore : Color.FromArgb(99, 99, 104),
+        };
+        row.Controls.Add(rightLabel);
+
+        if (percentText is not null)
+        {
+            var percentLabel = new Label
+            {
+                Text = percentText,
+                AutoSize = false,
+                AutoEllipsis = true,
+                Size = new Size(92, 20),
+                Location = new Point(132, 0),
+                ForeColor = fore,
+            };
+            row.Controls.Add(percentLabel);
+        }
+
+        if (fraction is { } f && barColor is { } color)
+        {
+            var bar = new QuotaBar
+            {
+                Fraction = f,
+                FillColor = color,
+                Size = new Size(224, 6),
+                Location = new Point(0, 22),
+                BackColor = Color.White,
+            };
+            row.Controls.Add(bar);
+            row.Height = 34;
+        }
+        else
+        {
+            row.Height = 24;
+        }
+
+        if (note is not null)
+        {
+            var noteLabel = new Label
+            {
+                Text = note,
+                AutoSize = false,
+                AutoEllipsis = true,
+                Size = new Size(348, 18),
+                Location = new Point(0, row.Height - 2),
+                ForeColor = Color.FromArgb(142, 142, 147),
+                Font = new Font(Font.FontFamily, 8F),
+            };
+            row.Controls.Add(noteLabel);
+            row.Height += 18;
+        }
+
+        return row;
+    }
+
+    private void SizeCard(Panel card, FlowLayoutPanel rowsPanel, int extraRows)
+    {
+        card.Height = rowsPanel.Location.Y + rowsPanel.Height + 12 + extraRows;
+    }
+
+    private static string ResetText(QuotaWindow window)
+    {
+        if (window.ResetsAtUtc is null) return "—";
+        var local = window.ResetsAtUtc.Value.ToLocalTime();
+        if (local <= DateTimeOffset.Now)
+        {
+            return L("monitor.reset_pending");
+        }
+        return $"{local:M/d HH:mm} " + L("monitor.reset_suffix");
+    }
+
+    private static string ErrorKeyFor(ProviderErrorKind kind) => kind switch
+    {
+        ProviderErrorKind.CliNotFound => "monitor.error.cli_not_installed",
+        ProviderErrorKind.UnsupportedEntry => "monitor.error.unsupported_entry",
+        ProviderErrorKind.NotSignedIn => "monitor.error.not_signed_in",
+        ProviderErrorKind.ApiError => "monitor.error.api_error",
+        ProviderErrorKind.Timeout => "monitor.error.timeout",
+        ProviderErrorKind.OutputLimitExceeded => "monitor.error.output_limit",
+        ProviderErrorKind.ParseFailed => "monitor.error.parse_failed",
+        ProviderErrorKind.Cancelled => "monitor.error.cancelled",
+        ProviderErrorKind.Disabled => "monitor.state_disabled",
+        _ => "monitor.error.execution_failed",
+    };
+
+    // ---------- memory view ----------
+
+    private void BuildMemoryView()
+    {
+        _memoryView.Dock = DockStyle.Fill;
+        _memoryView.Padding = new Padding(10, 4, 10, 10);
+        _memoryView.BackColor = PageBack;
+
+        var card = new CardPanel
+        {
+            Location = new Point(10, 4),
+            Size = new Size(372, 496),
+            BackColor = Color.White,
+            Padding = new Padding(12, 10, 12, 10),
+        };
+
+        var grid = new TableLayoutPanel
+        {
+            ColumnCount = 2,
+            RowCount = 5,
+            Location = new Point(12, 34),
+            Size = new Size(348, 130),
+        };
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+
+        void AddStat(int column, int row, Label valueLabel)
+        {
+            valueLabel.AutoSize = false;
+            valueLabel.Size = new Size(170, 22);
+            valueLabel.TextAlign = ContentAlignment.MiddleLeft;
+            grid.Controls.Add(valueLabel, column, row);
+        }
+
+        AddStat(0, 0, _memoryPhysicalLabel);
+        AddStat(0, 1, _memoryAvailableLabel);
+        AddStat(0, 2, _memoryCommitLabel);
+        AddStat(0, 3, _memorySignalLabel);
+        AddStat(0, 4, _memorySampledLabel);
+
+        _trendChart.Location = new Point(12, 172);
+        _trendChart.Size = new Size(348, 258);
+        _trendChart.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
+
+        _taskManagerButton.AutoSize = true;
+        _taskManagerButton.FlatStyle = FlatStyle.Flat;
+        _taskManagerButton.FlatAppearance.BorderSize = 0;
+        _taskManagerButton.BackColor = Color.FromArgb(232, 232, 236);
+        _taskManagerButton.Location = new Point(12, card.Height - 40);
+        _taskManagerButton.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+        _taskManagerButton.Click += (_, _) =>
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo("taskmgr.exe") { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                LogService.Error("Failed to start task manager", ex);
+            }
+        };
+
+        card.Controls.Add(_memoryStateLabel);
+        _memoryStateLabel.AutoSize = true;
+        _memoryStateLabel.Font = new Font(Font, FontStyle.Bold);
+        _memoryStateLabel.Location = new Point(12, 10);
+        card.Controls.Add(grid);
+        card.Controls.Add(_trendChart);
+        card.Controls.Add(_taskManagerButton);
+
+        _memoryView.Controls.Add(card);
+    }
+
+    private void UpdateMemoryView()
+    {
+        if (IsDisposed) return;
+        var settings = _coordinator.Settings;
+        var sample = _coordinator.LatestMemorySample;
+        var error = _coordinator.LastMemoryError;
+        var stale = _coordinator.MemoryStale;
+
+        if (!settings.MemoryEnabled)
+        {
+            _memoryStateLabel.Text = L("monitor.memory_disabled");
+            _memoryStateLabel.ForeColor = SystemColors.ControlText;
+        }
+        else if (sample is null)
+        {
+            _memoryStateLabel.Text = error is null ? L("monitor.memory_no_data") : L("monitor.memory_error", error);
+            _memoryStateLabel.ForeColor = error is null ? SystemColors.ControlText : BarRed;
+        }
+        else if (stale)
+        {
+            _memoryStateLabel.Text = L("monitor.memory_stale");
+            _memoryStateLabel.ForeColor = BarAmber;
+        }
+        else
+        {
+            _memoryStateLabel.Text = L("monitor.memory_live");
+            _memoryStateLabel.ForeColor = SystemColors.ControlText;
+        }
+
+        if (sample is not null)
+        {
+            _memoryPhysicalLabel.Text = L("monitor.memory_used_of",
+                FormatBytes(sample.PhysicalUsedBytes), FormatBytes(sample.PhysicalTotalBytes));
+            _memoryAvailableLabel.Text = L("monitor.memory_available", FormatBytes(sample.PhysicalAvailableBytes));
+            _memoryCommitLabel.Text = L("monitor.memory_commit_values",
+                FormatBytes(sample.CommitTotalBytes), FormatBytes(sample.CommitLimitBytes));
+            _memorySignalLabel.Text = L("monitor.memory_low_signal") + "：" + sample.LowMemorySignal switch
+            {
+                true => L("monitor.low_triggered"),
+                false => L("monitor.low_not_triggered"),
+                null => L("monitor.low_unknown"),
+            };
+            _memorySampledLabel.Text = L("monitor.memory_sampled", FormatTime(sample.SampledAtUtc));
+        }
+        else
+        {
+            _memoryPhysicalLabel.Text = L("monitor.not_provided");
+            _memoryAvailableLabel.Text = L("monitor.not_provided");
+            _memoryCommitLabel.Text = L("monitor.not_provided");
+            _memorySignalLabel.Text = L("monitor.memory_low_signal") + "：" + L("monitor.low_unknown");
+            _memorySampledLabel.Text = L("monitor.memory_sampled", "—");
+        }
+
+        _trendChart.Samples = _coordinator.MemoryHistory.Snapshot();
+        _trendChart.Invalidate();
+    }
+
+    // ---------- settings view ----------
+
+    private void BuildSettingsView()
+    {
+        _settingsView.Dock = DockStyle.Fill;
+        _settingsView.Padding = new Padding(10, 4, 10, 10);
+        _settingsView.BackColor = PageBack;
+        _settingsView.AutoScroll = true;
+
+        var card = new CardPanel
+        {
+            Location = new Point(10, 4),
+            Size = new Size(372, 496),
+            BackColor = Color.White,
+            Padding = new Padding(12, 10, 12, 10),
+        };
+
+        var layout = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            AutoScroll = true,
+            Location = new Point(6, 6),
+            Size = new Size(352, 480),
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom,
+        };
+
+        foreach (ProviderId id in Enum.GetValues<ProviderId>())
+        {
+            var enable = new CheckBox
+            {
+                Name = $"enable_{id}",
+                AutoSize = true,
+                Text = L($"monitor.provider.{id.ToString().ToLowerInvariant()}"),
+                Margin = new Padding(2, 6, 2, 0),
+            };
+            var path = new TextBox
+            {
+                Name = $"cliPath_{id}",
+                Width = 330,
+                Margin = new Padding(20, 0, 2, 8),
+            };
+            _toolTip.SetToolTip(path, L("monitor.settings.cli_path"));
+            _enableChecks[id] = enable;
+            _pathBoxes[id] = path;
+            layout.Controls.Add(enable);
+            layout.Controls.Add(path);
+        }
+
+        _memoryCheck.Name = "memoryEnabledCheck";
+        _memoryCheck.AutoSize = true;
+        _memoryCheck.Text = L("monitor.settings.memory");
+        _memoryCheck.Margin = new Padding(2, 10, 2, 0);
+        _remindersCheck.Name = "remindersCheck";
+        _remindersCheck.AutoSize = true;
+        _remindersCheck.Text = L("monitor.settings.reminders");
+        _remindersCheck.Margin = new Padding(2, 6, 2, 0);
+
+        _hotkeyHint.AutoSize = false;
+        _hotkeyHint.Size = new Size(336, 34);
+        _hotkeyHint.ForeColor = Color.FromArgb(142, 142, 147);
+        _hotkeyHint.Margin = new Padding(2, 10, 2, 0);
+
+        _saveButton.AutoSize = true;
+        _saveButton.FlatStyle = FlatStyle.Flat;
+        _saveButton.FlatAppearance.BorderSize = 0;
+        _saveButton.BackColor = Accent;
+        _saveButton.ForeColor = Color.White;
+        _saveButton.Padding = new Padding(10, 0, 10, 0);
+        _saveButton.Margin = new Padding(2, 10, 2, 0);
+        _saveButton.Click += (_, _) => ApplySettingsFromView();
+
+        _saveStatusLabel.AutoSize = true;
+        _saveStatusLabel.ForeColor = Color.FromArgb(142, 142, 147);
+        _saveStatusLabel.Margin = new Padding(8, 14, 2, 0);
+
+        layout.Controls.Add(_memoryCheck);
+        layout.Controls.Add(_remindersCheck);
+        layout.Controls.Add(_hotkeyHint);
+        layout.Controls.Add(_saveButton);
+        layout.Controls.Add(_saveStatusLabel);
+
+        card.Controls.Add(layout);
+        _settingsView.Controls.Add(card);
+    }
+
+    private void LoadSettingsFromCoordinator()
+    {
+        var settings = _coordinator.Settings;
+        foreach (ProviderId id in Enum.GetValues<ProviderId>())
+        {
+            var provider = settings.Provider(id);
+            _enableChecks[id].Checked = provider.Enabled;
+            _pathBoxes[id].Text = provider.CliPath ?? "";
+        }
+        _memoryCheck.Checked = settings.MemoryEnabled;
+        _remindersCheck.Checked = settings.RemindersEnabled;
+        _hotkeyHint.Text = L("monitor.hotkey_hint", settings.PopoverHotkey);
+        _saveStatusLabel.Text = "";
+    }
+
+    private void ApplySettingsFromView()
+    {
+        var settings = _coordinator.Settings with
+        {
+            MemoryEnabled = _memoryCheck.Checked,
+            RemindersEnabled = _remindersCheck.Checked,
+            Providers = Enum.GetValues<ProviderId>().Select(id => new ProviderSettings
+            {
+                Id = id,
+                Enabled = _enableChecks[id].Checked,
+                CliPath = string.IsNullOrWhiteSpace(_pathBoxes[id].Text) ? null : _pathBoxes[id].Text.Trim(),
+            }).ToList(),
+        };
+
+        // Apply first so the views update even if the save fails (a failed save is
+        // reported, never faked — spec §8(6)).
+        _coordinator.ApplySettings(settings);
+        var saved = _coordinator.SaveSettings(settings);
+        _saveStatusLabel.Text = saved ? L("monitor.saved") : L("monitor.settings.save_failed");
+        _hotkeyHint.Text = L("monitor.hotkey_hint", settings.PopoverHotkey);
+    }
+
+    // ---------- localization refresh ----------
+
+    private void ApplyLocalization()
+    {
+        Text = L("monitor.title");
+        _quotaSegment.Text = L("monitor.tab_quota");
+        _memorySegment.Text = L("monitor.tab_memory");
+        _refreshButton.Text = "⟳";
+        _settingsButton.Text = "⚙";
+        _taskManagerButton.Text = L("monitor.open_task_manager");
+        _saveButton.Text = L("monitor.settings.save");
+        _trendChart.Title = L("monitor.trend_title");
+        _trendChart.SeriesNames = (L("monitor.trend_physical"), L("monitor.trend_commit"));
+        _trendChart.EmptyText = L("monitor.trend_no_data");
+        foreach (ProviderId id in Enum.GetValues<ProviderId>())
+        {
+            if (_cardTitles.TryGetValue(id, out var title))
+            {
+                title.Text = L($"monitor.provider.{id.ToString().ToLowerInvariant()}");
+            }
         }
     }
 
-    private static void AddSimpleRow(ListView list, string window, string quota, string reset)
-    {
-        list.Items.Add(new ListViewItem([window, quota, reset]));
-    }
-
-    private static string RowTitle(QuotaBucket bucket, QuotaWindow window)
-    {
-        var bucketName = bucket.DisplayName ?? bucket.SourceKey;
-        var windowName = LocalizeWindowKey(window.SourceKey, window.Label);
-        var duration = DescribeDuration(window.WindowDurationMinutes);
-        var title = $"{bucketName} · {windowName}";
-        if (bucket.SeatId is not null) title += $" · {bucket.SeatId}";
-        if (duration is not null) title += $" ({duration})";
-        return title;
-    }
+    // ---------- statics shared with tests / tray ----------
 
     internal static string LocalizeWindowKey(string sourceKey, string? label)
     {
@@ -433,151 +1059,8 @@ public sealed class MonitorForm : Form
         return label ?? sourceKey;
     }
 
-    private static string? DescribeDuration(long? minutes)
-    {
-        if (minutes is null or <= 0) return null;
-        if (minutes % 1440 == 0) return LocalizationService.Get("common.duration_days", minutes / 1440);
-        if (minutes % 60 == 0) return LocalizationService.Get("common.duration_hours", minutes / 60);
-        return LocalizationService.Get("common.duration_minutes", minutes.Value);
-    }
-
-    private static string QuotaText(QuotaWindow window)
-    {
-        if (!window.HasAnyQuotaField) return LocalizationService.Get("monitor.not_provided");
-        if (window.PercentOutOfRange || window.UsedPercent is < 0 or > 100)
-        {
-            return LocalizationService.Get("monitor.percent_out_of_range",
-                FormatPercent((window.UsedPercent ?? window.RemainingPercent) ?? 0));
-        }
-
-        var parts = new List<string>();
-        if (window.UsedPercent is { } used && window.RemainingPercent is { } remaining)
-        {
-            parts.Add(LocalizationService.Get("monitor.percent_used",
-                FormatPercent(used), FormatPercent(remaining)));
-        }
-        if (window.UsedText is not null && window.TotalText is not null)
-        {
-            parts.Add(LocalizationService.Get("monitor.counts", window.UsedText, window.TotalText));
-        }
-        return parts.Count == 0 ? LocalizationService.Get("monitor.not_provided") : string.Join(" · ", parts);
-    }
-
     internal static string FormatPercent(double value) =>
         value == Math.Floor(value) ? ((int)value).ToString() : value.ToString("0.0");
-
-    private static string ResetText(QuotaWindow window)
-    {
-        if (window.ResetsAtUtc is null) return LocalizationService.Get("monitor.reset_unknown");
-        var local = window.ResetsAtUtc.Value.ToLocalTime();
-        if (local <= DateTimeOffset.Now)
-        {
-            return LocalizationService.Get("monitor.reset_pending");
-        }
-        return FormatTime(local) + " (" + FormatCountdown(local - DateTimeOffset.Now) + ")";
-    }
-
-    private static string DescribeCreditDetails(ResetCreditSummary credits)
-    {
-        if (credits.Details is null)
-        {
-            return LocalizationService.Get("monitor.reset_credits_count_only");
-        }
-        if (credits.Details.Count == 0)
-        {
-            return LocalizationService.Get("monitor.reset_credits_empty_details");
-        }
-        return string.Join("; ", credits.Details.Select(c =>
-        {
-            var title = c.Title;
-            if (c.ExpiresAtUtc is { } expires)
-            {
-                title += " " + LocalizationService.Get("monitor.reset_credit_expires", FormatTime(expires));
-            }
-            if (c.Status is { } status && status != "available")
-            {
-                title += $" [{status}]";
-            }
-            return title;
-        }));
-    }
-
-    private string BuildExtraText(ProviderDisplayState state)
-    {
-        var snapshot = state.LastGood;
-        var bits = new List<string>();
-        if (snapshot?.IdentityDisplay is { } identity) bits.Add(identity);
-        if (snapshot?.CliVersion is { } version) bits.Add($"CLI {version}");
-        return string.Join(" · ", bits);
-    }
-
-    private static string ErrorKeyFor(ProviderErrorKind kind) => kind switch
-    {
-        ProviderErrorKind.CliNotFound => "monitor.error.cli_not_installed",
-        ProviderErrorKind.UnsupportedEntry => "monitor.error.unsupported_entry",
-        ProviderErrorKind.NotSignedIn => "monitor.error.not_signed_in",
-        ProviderErrorKind.ApiError => "monitor.error.api_error",
-        ProviderErrorKind.Timeout => "monitor.error.timeout",
-        ProviderErrorKind.OutputLimitExceeded => "monitor.error.output_limit",
-        ProviderErrorKind.ParseFailed => "monitor.error.parse_failed",
-        ProviderErrorKind.Cancelled => "monitor.error.cancelled",
-        ProviderErrorKind.Disabled => "monitor.state_disabled",
-        _ => "monitor.error.execution_failed",
-    };
-
-    private void RefreshMemoryTab()
-    {
-        var settings = _coordinator.Settings;
-        var sample = _coordinator.LatestMemorySample;
-        var error = _coordinator.LastMemoryError;
-        var stale = _coordinator.MemoryStale;
-
-        if (!settings.MemoryEnabled)
-        {
-            _memoryStateLabel.Text = L("monitor.memory_disabled");
-        }
-        else if (sample is null)
-        {
-            _memoryStateLabel.Text = error is null
-                ? L("monitor.memory_no_data")
-                : L("monitor.memory_error", error);
-        }
-        else if (stale)
-        {
-            _memoryStateLabel.Text = L("monitor.memory_stale");
-        }
-        else
-        {
-            _memoryStateLabel.Text = L("monitor.memory_live");
-        }
-
-        if (sample is not null)
-        {
-            _memoryPhysicalLabel.Text = L("monitor.memory_used_of",
-                FormatBytes(sample.PhysicalUsedBytes), FormatBytes(sample.PhysicalTotalBytes));
-            _memoryAvailableLabel.Text = L("monitor.memory_available", FormatBytes(sample.PhysicalAvailableBytes));
-            _memoryCommitLabel.Text = L("monitor.memory_commit_values",
-                FormatBytes(sample.CommitTotalBytes), FormatBytes(sample.CommitLimitBytes));
-            _memorySignalLabel.Text = sample.LowMemorySignal switch
-            {
-                true => L("monitor.low_triggered"),
-                false => L("monitor.low_not_triggered"),
-                null => L("monitor.low_unknown"),
-            };
-            _memorySampledLabel.Text = L("monitor.memory_sampled", FormatTime(sample.SampledAtUtc));
-        }
-        else
-        {
-            _memoryPhysicalLabel.Text = L("monitor.not_provided");
-            _memoryAvailableLabel.Text = L("monitor.not_provided");
-            _memoryCommitLabel.Text = L("monitor.not_provided");
-            _memorySignalLabel.Text = L("monitor.low_unknown");
-            _memorySampledLabel.Text = L("monitor.memory_sampled", "—");
-        }
-
-        _trendChart.Samples = _coordinator.MemoryHistory.Snapshot();
-        _trendChart.Invalidate();
-    }
 
     internal static string FormatBytes(ulong bytes)
     {
@@ -605,21 +1088,118 @@ public sealed class MonitorForm : Form
         return LocalizationService.Get("common.countdown_minutes", Math.Max(1, (int)Math.Ceiling(remaining.TotalMinutes)));
     }
 
-    private void ApplyLocalization()
+    // ---------- shell interop for tray anchoring ----------
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NotifyIconIdentifier
     {
-        _refreshAllButton.Text = L("monitor.refresh_all");
-        _settingsButton.Text = L("monitor.settings");
-        _quotaTab.Text = L("monitor.tab_quota");
-        _memoryTab.Text = L("monitor.tab_memory");
-        foreach (var list in _providerLists.Values)
+        public int CbSize;
+        public IntPtr HWnd;
+        public uint UId;
+        public Guid GuidItem;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Rect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [DllImport("shell32.dll")]
+    private static extern int ShellNotifyIconGetRect(ref NotifyIconIdentifier identifier, out Rect iconLocation);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+    // ---------- small custom controls ----------
+
+    /// <summary>A 6px rounded quota bar — the only "chart" a quota row needs.</summary>
+    internal sealed class QuotaBar : Control
+    {
+        public double Fraction { get; set; }
+        public Color FillColor { get; set; } = BarGreen;
+
+        public QuotaBar()
         {
-            list.Columns[0].Text = L("monitor.col_window");
-            list.Columns[1].Text = L("monitor.col_quota");
-            list.Columns[2].Text = L("monitor.col_reset");
+            DoubleBuffered = true;
         }
-        _trendChart.Title = L("monitor.trend_title");
-        _trendChart.SeriesNames = (L("monitor.trend_physical"), L("monitor.trend_commit"));
-        _trendChart.EmptyText = L("monitor.trend_no_data");
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            var g = e.Graphics;
+            g.Clear(BackColor);
+            var track = new Rectangle(0, Height / 2 - 3, Width, 6);
+            using var trackBrush = new SolidBrush(Color.FromArgb(235, 235, 240));
+            using var trackPath = RoundedPath(track, 3);
+            g.FillPath(trackBrush, trackPath);
+
+            var fillWidth = (int)Math.Round(Width * Math.Clamp(Fraction, 0, 1));
+            if (fillWidth > 0)
+            {
+                var fill = new Rectangle(0, Height / 2 - 3, Math.Max(fillWidth, 6), 6);
+                using var fillBrush = new SolidBrush(FillColor);
+                using var fillPath = RoundedPath(fill, 3);
+                g.FillPath(fillBrush, fillPath);
+            }
+        }
+    }
+
+    /// <summary>Small rounded badge text (tier names like pro / personal, plan labels).</summary>
+    internal sealed class BadgeLabel : Control
+    {
+        public BadgeLabel()
+        {
+            DoubleBuffered = true;
+            BackColor = Color.White;
+            ForeColor = Color.FromArgb(99, 99, 104);
+            Size = new Size(36, 18);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            var g = e.Graphics;
+            g.Clear(BackColor);
+            if (Text.Length == 0) return;
+            var textSize = TextRenderer.MeasureText(Text, Font);
+            var rect = new Rectangle(0, 0, textSize.Width + 10, Height - 1);
+            using var brush = new SolidBrush(Color.FromArgb(240, 240, 243));
+            using var path = RoundedPath(rect, rect.Height / 2);
+            g.FillPath(brush, path);
+            TextRenderer.DrawText(g, Text, Font, rect, ForeColor,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        }
+
+        protected override void OnTextChanged(EventArgs e)
+        {
+            base.OnTextChanged(e);
+            var textSize = TextRenderer.MeasureText(Text, Font);
+            Width = Math.Max(20, textSize.Width + 12);
+            Invalidate();
+        }
+    }
+
+    /// <summary>White rounded card with a hairline border (provider sections / view pages).</summary>
+    internal sealed class CardPanel : Panel
+    {
+        public CardPanel()
+        {
+            DoubleBuffered = true;
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            using var path = RoundedPath(new Rectangle(0, 0, Width - 1, Height - 1), 10);
+            using var brush = new SolidBrush(BackColor);
+            e.Graphics.FillPath(brush, path);
+            using var pen = new Pen(CardBorder);
+            e.Graphics.DrawPath(pen, path);
+        }
     }
 
     /// <summary>
@@ -639,7 +1219,7 @@ public sealed class MonitorForm : Form
         public MemoryTrendChart()
         {
             DoubleBuffered = true;
-            BackColor = SystemColors.Window;
+            BackColor = Color.White;
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -667,10 +1247,9 @@ public sealed class MonitorForm : Form
         private void DrawSeries(Graphics g, int top, int height, Func<MemorySample, double> value, string name)
         {
             var bounds = new Rectangle(52, top, Width - 64, height);
-            using var borderPen = new Pen(SystemColors.ControlDark);
+            using var borderPen = new Pen(CardBorder);
             g.DrawRectangle(borderPen, bounds);
 
-            // One hour window ending "now"; x positions are time-mapped so gaps show.
             var now = DateTimeOffset.UtcNow;
             var windowStart = now.AddHours(-1);
             double min = double.MaxValue, max = double.MinValue;
@@ -696,7 +1275,7 @@ public sealed class MonitorForm : Form
             float X(DateTimeOffset t) => bounds.Left + (float)((t - windowStart) / TimeSpan.FromHours(1)) * bounds.Width;
             float Y(double v) => bounds.Bottom - (float)((v - min) / (max - min)) * bounds.Height;
 
-            using var linePen = new Pen(Color.FromArgb(70, 110, 180), 1.6f);
+            using var linePen = new Pen(Accent, 1.6f);
             var previous = default(MemorySample);
             foreach (var s in Samples)
             {

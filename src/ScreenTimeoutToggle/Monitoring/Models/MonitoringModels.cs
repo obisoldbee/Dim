@@ -242,6 +242,12 @@ public sealed record MonitoringSettings
     /// <summary>Quota reminders default to off.</summary>
     public bool RemindersEnabled { get; init; } = false;
 
+    /// <summary>
+    /// Global hotkey that toggles the monitoring popover, as one string
+    /// ("Ctrl+Alt+D"). Empty/invalid strings fall back to the default at registration.
+    /// </summary>
+    public string PopoverHotkey { get; init; } = "Ctrl+Alt+D";
+
     public IReadOnlyList<ProviderSettings> Providers { get; init; } = CreateDefaultProviders();
 
     public ProviderSettings Provider(ProviderId id) =>
