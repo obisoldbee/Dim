@@ -78,7 +78,9 @@ public class MonitorFormHelperTests
     [InlineData(0, "0")]
     [InlineData(42, "42")]
     [InlineData(51.5, "51.5")]
-    [InlineData(97.92592506666666, "97.9")]
+    // Reference precision: real fractional percents render in full ("97.93%"), not
+    // truncated to one decimal.
+    [InlineData(97.92592506666666, "97.93")]
     public void FormatPercent_RoundsSensibly(double value, string expected)
     {
         Assert.Equal(expected, MonitorForm.FormatPercent(value));

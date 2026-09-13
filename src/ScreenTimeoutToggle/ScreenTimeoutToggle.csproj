@@ -31,6 +31,13 @@
   -->
   <ItemGroup>
     <EmbeddedResource Include="assets\obdim.ico" />
+    <!--
+      Provider logos fetched from the macOS Usage-Butler repo (Assets.xcassets @2x,
+      commit aa91706) so the quota cards show the real marks, not colour dots.
+    -->
+    <EmbeddedResource Include="assets\provider-openai.png" />
+    <EmbeddedResource Include="assets\provider-minimax.png" />
+    <EmbeddedResource Include="assets\provider-ark.png" />
   </ItemGroup>
 
 </Project>

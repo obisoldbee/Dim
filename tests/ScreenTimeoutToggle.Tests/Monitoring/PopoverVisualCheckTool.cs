@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Runtime.InteropServices;
 using OBDim.Monitoring.Infrastructure;
 using OBDim.Monitoring.Models;
@@ -176,6 +177,8 @@ public class PopoverVisualCheckTool
                 Application.DoEvents();
                 System.Threading.Thread.Sleep(300);
 
+                DumpQuotaControls(form, "after-show");
+
                 Capture(form, Path.Combine(outDir, "quota.png"));
                 form.CreditsExpanded = true;
                 Application.DoEvents();
@@ -198,6 +201,38 @@ public class PopoverVisualCheckTool
                 try { Directory.Delete(dir, true); } catch (IOException) { }
             }
         });
+    }
+
+    /// <summary>Manual-run diagnostic: prints the live geometry of the quota header
+    /// controls so layout regressions can be located from test output alone.</summary>
+    private static void DumpQuotaControls(MonitorForm form, string phase)
+    {
+        var cards = ReadField<Dictionary<ProviderId, Panel>>(form, "_cards")!;
+        var titles = ReadField<Dictionary<ProviderId, Label>>(form, "_cardTitles")!;
+        var badges = ReadField<Dictionary<ProviderId, MonitorForm.BadgeLabel>>(form, "_cardBadges")!;
+        var updated = ReadField<Dictionary<ProviderId, Label>>(form, "_cardUpdated")!;
+        foreach (var id in Enum.GetValues<ProviderId>())
+        {
+            if (!cards.TryGetValue(id, out var card)) continue;
+            var t = titles[id];
+            var b = badges[id];
+            var u = updated[id];
+            Console.WriteLine(
+                $"[visual:{phase}] {id}: card={card.Bounds} title='{t.Text}'@{t.Bounds} " +
+                $"badge='{b.Text}' visible={b.Visible}@{b.Bounds} updated='{u.Text}' visible={u.Visible}@{u.Bounds}");
+            File.AppendAllText(
+                Path.Combine(Path.GetTempPath(), "obdim-visual", "controls.txt"),
+                $"[visual:{phase}] {id}: card={card.Bounds} title='{t.Text}'@{t.Bounds} " +
+                $"badge='{b.Text}' visible={b.Visible}@{b.Bounds} updated='{u.Text}' visible={u.Visible}@{u.Bounds}" +
+                Environment.NewLine);
+        }
+    }
+
+    private static T? ReadField<T>(object owner, string name) where T : class
+    {
+        var field = typeof(MonitorForm).GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new InvalidOperationException($"Missing field {name}");
+        return field.GetValue(owner) as T;
     }
 
     [DllImport("user32.dll")]

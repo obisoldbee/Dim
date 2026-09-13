@@ -41,6 +41,7 @@ public sealed class MonitorForm : Form
     private readonly Panel _header = new();
     private readonly Button _quotaSegment = new();
     private readonly Button _memorySegment = new();
+    private readonly Panel _quotaUnderline = new();
     private readonly Button _refreshButton = new();
     private readonly Button _settingsButton = new();
 
@@ -51,27 +52,53 @@ public sealed class MonitorForm : Form
 
     // Quota cards (one per provider)
     private readonly Dictionary<ProviderId, Panel> _cards = [];
+    private readonly Dictionary<ProviderId, PictureBox> _cardLogos = [];
     private readonly Dictionary<ProviderId, Label> _cardTitles = [];
     private readonly Dictionary<ProviderId, BadgeLabel> _cardBadges = [];
+    private readonly Dictionary<ProviderId, Label> _cardUpdated = [];
     private readonly Dictionary<ProviderId, Label> _cardStates = [];
     private readonly Dictionary<ProviderId, FlowLayoutPanel> _cardRows = [];
+
+    /// <summary>Scales a reference-logical (96 DPI) length into this window's device pixels.
+    /// Runtime-built row controls do not go through WinForms auto-scaling, so every fixed
+    /// length they use must be scaled here; ctor-built controls use logical values and let
+    /// AutoScaleMode.Dpi do the scaling.</summary>
+    private int S(int logical) => (int)Math.Round(logical * (DeviceDpi / 96.0));
 
     // Incremental card updates: the rendered row STATE (signature) decides between an
     // in-place text/brush refresh (cheap, no control churn) and a structural rebuild.
     // Rebuilding dozens of controls per event was what made every interaction stall.
     private sealed record RowDesc(
         string Title, string Percent, double? Fraction, Color? BarColor,
-        string Right, bool Dimmed, string? Note, bool Clickable = false);
+        string Right, bool Dimmed, bool Clickable = false,
+        string Badge = "", Color? ValueColor = null,
+        bool SectionHeader = false, bool SeparatorAbove = false);
 
     private readonly Dictionary<ProviderId, string> _cardSignatures = [];
     private readonly Dictionary<ProviderId, List<Control>> _cardRowControls = [];
 
-    private static readonly Color[] ProviderDotColors =
-    [
-        Color.FromArgb(24, 24, 27),      // Codex
-        Color.FromArgb(255, 77, 79),     // MiniMax
-        Color.FromArgb(59, 130, 246),    // Ark
-    ];
+    /// <summary>Provider logos shared by all card instances; loaded once, kept for the process lifetime.</summary>
+    private static readonly Dictionary<ProviderId, Image> LogoCache = [];
+
+    private static Image ProviderLogo(ProviderId id)
+    {
+        if (LogoCache.TryGetValue(id, out var cached)) return cached;
+        var name = id switch
+        {
+            ProviderId.Codex => "provider-openai.png",
+            ProviderId.MiniMax => "provider-minimax.png",
+            _ => "provider-ark.png",
+        };
+        // GDI+ may lazily decode, so the stream must outlive the Image — copy the
+        // embedded resource into a MemoryStream we deliberately never close.
+        using var resource = typeof(MonitorForm).Assembly.GetManifestResourceStream($"OBDim.assets.{name}")
+            ?? throw new InvalidOperationException($"Missing embedded logo resource: {name}");
+        using var buffer = new MemoryStream();
+        resource.CopyTo(buffer);
+        var image = Image.FromStream(new MemoryStream(buffer.ToArray()));
+        LogoCache[id] = image;
+        return image;
+    }
 
     // Memory view controls
     private readonly Label _memoryStateLabel = new();
@@ -96,13 +123,23 @@ public sealed class MonitorForm : Form
     private readonly Button _saveButton = new();
     private readonly Label _saveStatusLabel = new();
 
-    private static readonly Color Accent = Color.FromArgb(0, 122, 255);     // macOS blue
-    private static readonly Color BarGreen = Color.FromArgb(52, 199, 89);
-    private static readonly Color BarAmber = Color.FromArgb(255, 159, 10);
-    private static readonly Color BarRed = Color.FromArgb(255, 59, 48);
-    private static readonly Color CardBorder = Color.FromArgb(234, 234, 238);
-    private static readonly Color PageBack = Color.FromArgb(246, 246, 248);
-    private static readonly Color TextSecondary = Color.FromArgb(134, 134, 140);
+    // Palette lifted from the reference handoff (windows-quota-reference.html :root).
+    private static readonly Color Accent = Color.FromArgb(0x14, 0x79, 0xFA);       // #1479fa
+    private static readonly Color BarGreen = Color.FromArgb(0x2A, 0xBD, 0x51);     // #2abd51
+    private static readonly Color BarAmber = Color.FromArgb(0xED, 0xB7, 0x28);     // #edb728
+    private static readonly Color BarRed = Color.FromArgb(0xFB, 0x30, 0x41);       // #fb3041
+    private static readonly Color CardBorder = Color.FromArgb(0xEB, 0xEB, 0xED);   // #ebebed
+    private static readonly Color TextStrong = Color.FromArgb(0x37, 0x39, 0x3D);   // #37393d
+    private static readonly Color TextPrimary = Color.FromArgb(0x49, 0x4B, 0x50);  // #494b50
+    private static readonly Color TextSecondary = Color.FromArgb(0x85, 0x86, 0x8B);// #85868b
+    private static readonly Color Hairline = Color.FromArgb(0xE9, 0xE9, 0xEB);     // #e9e9eb
+    private static readonly Color BadgeBack = Color.FromArgb(0xE9, 0xE9, 0xEB);    // #e9e9eb
+    private static readonly Color BadgeText = Color.FromArgb(0x77, 0x7A, 0x80);    // #777a80
+    private static readonly Color TrackBack = Color.FromArgb(0xF0, 0xF1, 0xF2);    // #f0f1f2
+    private static readonly Color SectionBack = Color.FromArgb(0xF4, 0xF4, 0xF5);  // #f4f4f5
+    private static readonly Color StaleText = Color.FromArgb(0x91, 0x67, 0x1D);    // #91671d
+    private static readonly Color UnlimitedBlue = Color.FromArgb(0x06, 0x73, 0xFF);// #0673ff
+    private static readonly Color PageBack = Color.White;
 
     public MonitorForm(MonitoringCoordinator coordinator,
         Func<AppConfig>? appConfigGetter = null,
@@ -120,7 +157,10 @@ public sealed class MonitorForm : Form
         DoubleBuffered = true;
         BackColor = PageBack;
         Font = new Font("Microsoft YaHei UI", 9F);
-        ClientSize = new Size(410, 600);
+        // Reference content panel: 540×760 logical units (windows-quota-reference.html).
+        // ShowAnchoredToTray clamps the height to the monitor's working area, so small
+        // 150%-scaled screens scroll instead of spilling past the taskbar.
+        ClientSize = new Size(540, 760);
 
         BuildHeader();
         BuildQuotaView();
@@ -271,6 +311,7 @@ public sealed class MonitorForm : Form
         var screen = Screen.FromRectangle(new Rectangle(iconRect.Left, iconRect.Top,
             Math.Max(1, iconRect.Right - iconRect.Left), Math.Max(1, iconRect.Bottom - iconRect.Top)));
         var work = screen.WorkingArea;
+        ClampHeightToWorkArea(work);
         const int gap = 4;
 
         int x, y;
@@ -306,9 +347,21 @@ public sealed class MonitorForm : Form
     {
         var screen = Screen.FromPoint(Cursor.Position);
         var work = screen.WorkingArea;
+        ClampHeightToWorkArea(work);
         var x = Cursor.Position.X + 12 - Width;
         var y = work.Bottom - Height - 8;
         return ClampToWorkArea(x, y, work);
+    }
+
+    /// <summary>
+    /// The 760-logical panel must never spill past the taskbar on small or heavily
+    /// scaled screens — shrink to the working area and let the content scroll.
+    /// </summary>
+    private void ClampHeightToWorkArea(Rectangle work)
+    {
+        const int margin = 8;
+        var maxHeight = work.Height - 2 * margin;
+        if (Height > maxHeight && maxHeight > 200) Height = maxHeight;
     }
 
     private Point ClampToWorkArea(int x, int y, Rectangle work)
@@ -351,33 +404,33 @@ public sealed class MonitorForm : Form
 
     private void BuildHeader()
     {
-        // Explicit size before docking so right-anchored children compute their offsets
-        // against the final width.
-        _header.Size = new Size(410, 52);
+        // Reference: 56-logical-tall header, text tabs with a 3px accent underline, tool
+        // icons on the right, hairline bottom border (windows-quota-reference.html .header).
+        _header.Size = new Size(540, 56);
         _header.Dock = DockStyle.Top;
         _header.BackColor = PageBack;
+        _header.Paint += (_, e) =>
+        {
+            using var pen = new Pen(Hairline);
+            e.Graphics.DrawLine(pen, 0, _header.Height - 1, _header.Width, _header.Height - 1);
+        };
 
-        _quotaSegment.AutoSize = false;
-        _quotaSegment.Size = new Size(62, 28);
-        _quotaSegment.Location = new Point(14, 11);
-        _quotaSegment.FlatStyle = FlatStyle.Flat;
-        _quotaSegment.FlatAppearance.BorderSize = 0;
+        StyleTabButton(_quotaSegment);
         _quotaSegment.Click += (_, _) => SetView(View.Quota);
 
-        _memorySegment.AutoSize = false;
-        _memorySegment.Size = new Size(62, 28);
-        _memorySegment.Location = new Point(76, 11);
-        _memorySegment.FlatStyle = FlatStyle.Flat;
-        _memorySegment.FlatAppearance.BorderSize = 0;
+        StyleTabButton(_memorySegment);
         _memorySegment.Click += (_, _) => SetView(View.Memory);
 
+        _quotaUnderline.BackColor = Accent;
+        _quotaUnderline.Visible = false;
+
         _refreshButton.AutoSize = false;
-        _refreshButton.Size = new Size(32, 30);
-        _refreshButton.Location = new Point(326, 9);
+        _refreshButton.Size = new Size(32, 32);
+        _refreshButton.Location = new Point(540 - 19 - 32 - 8 - 32, 12);
         _refreshButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         _refreshButton.FlatStyle = FlatStyle.Flat;
         _refreshButton.FlatAppearance.BorderSize = 0;
-        _refreshButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(226, 226, 231);
+        _refreshButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(242, 243, 244);
         _refreshButton.BackColor = PageBack;
         _refreshButton.Font = new Font("Segoe UI Symbol", 12F);
         _refreshButton.Cursor = Cursors.Hand;
@@ -386,12 +439,12 @@ public sealed class MonitorForm : Form
         _toolTip.SetToolTip(_refreshButton, L("monitor.refresh_all"));
 
         _settingsButton.AutoSize = false;
-        _settingsButton.Size = new Size(32, 30);
-        _settingsButton.Location = new Point(366, 9);
+        _settingsButton.Size = new Size(32, 32);
+        _settingsButton.Location = new Point(540 - 19 - 32, 12);
         _settingsButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         _settingsButton.FlatStyle = FlatStyle.Flat;
         _settingsButton.FlatAppearance.BorderSize = 0;
-        _settingsButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(226, 226, 231);
+        _settingsButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(242, 243, 244);
         _settingsButton.BackColor = PageBack;
         _settingsButton.Font = new Font("Segoe UI Symbol", 11F);
         _settingsButton.Cursor = Cursors.Hand;
@@ -399,19 +452,22 @@ public sealed class MonitorForm : Form
         _settingsButton.AccessibleName = L("monitor.settings");
         _toolTip.SetToolTip(_settingsButton, L("monitor.settings"));
 
+        _header.Controls.Add(_quotaUnderline);
         _header.Controls.Add(_quotaSegment);
         _header.Controls.Add(_memorySegment);
         _header.Controls.Add(_refreshButton);
         _header.Controls.Add(_settingsButton);
+    }
 
-        // The gray track behind the two segment buttons.
-        _header.Paint += (_, e) =>
-        {
-            var segRect = new Rectangle(10, 8, 132, 34);
-            using var brush = new SolidBrush(Color.FromArgb(230, 230, 235));
-            using var path = RoundedPath(segRect, 9);
-            e.Graphics.FillPath(brush, path);
-        };
+    private void StyleTabButton(Button tab)
+    {
+        tab.AutoSize = false;
+        tab.Size = new Size(56, 30);
+        tab.FlatStyle = FlatStyle.Flat;
+        tab.FlatAppearance.BorderSize = 0;
+        tab.BackColor = PageBack;
+        tab.Cursor = Cursors.Hand;
+        tab.TextAlign = ContentAlignment.MiddleCenter;
     }
 
     public void SetView(View view)
@@ -432,8 +488,32 @@ public sealed class MonitorForm : Form
 
     private void StyleSegment(Button segment, bool selected)
     {
-        segment.BackColor = selected ? Color.White : PageBack;
-        segment.Invalidate();
+        // Reference tabs: 18px text, bold + dark when selected, muted otherwise; the
+        // 3px accent underline marks the active tab and hides on the settings view.
+        segment.Font = new Font("Microsoft YaHei UI", 13.5F, selected ? FontStyle.Bold : FontStyle.Regular);
+        segment.ForeColor = selected ? TextStrong : TextSecondary;
+        LayoutTabs();
+    }
+
+    /// <summary>Positions the two text tabs and the accent underline from the CURRENT text
+    /// metrics — tab labels localize, so widths come from measurement, never constants.</summary>
+    private void LayoutTabs()
+    {
+        var tabHeight = S(30);
+        var y = (_header.Height - tabHeight) / 2;
+        var quotaWidth = TextRenderer.MeasureText(_quotaSegment.Text, _quotaSegment.Font).Width + S(6);
+        var memoryWidth = TextRenderer.MeasureText(_memorySegment.Text, _memorySegment.Font).Width + S(6);
+        _quotaSegment.SetBounds(S(19), y, quotaWidth, tabHeight);
+        _memorySegment.SetBounds(S(19) + quotaWidth + S(24), y, memoryWidth, tabHeight);
+
+        if (_currentView == View.Settings)
+        {
+            _quotaUnderline.Visible = false;
+            return;
+        }
+        var selected = _currentView == View.Memory ? _memorySegment : _quotaSegment;
+        _quotaUnderline.SetBounds(selected.Left, _header.Height - S(5), selected.Width, S(3));
+        _quotaUnderline.Visible = true;
     }
 
     private static GraphicsPath RoundedPath(Rectangle rect, int radius)
@@ -456,63 +536,82 @@ public sealed class MonitorForm : Form
         _quotaView.FlowDirection = FlowDirection.TopDown;
         _quotaView.WrapContents = false;
         _quotaView.AutoScroll = true;
-        _quotaView.Padding = new Padding(12, 6, 12, 12);
+        _quotaView.Padding = new Padding(16);
 
         foreach (ProviderId id in Enum.GetValues<ProviderId>())
         {
             var card = new CardPanel
             {
-                Width = 378,
+                Width = 508,
                 BackColor = Color.White,
-                Padding = new Padding(14, 12, 14, 12),
-                Margin = new Padding(0, 0, 0, 10),
+                Margin = new Padding(0, 0, 0, 12),
+                HeaderRuleY = 51,
             };
 
-            var dot = new Panel
+            // Provider header, one row like the reference: logo + name + tier badge +
+            // "更新于 HH:mm", the hairline rule drawn by the card at HeaderRuleY.
+            var logo = new PictureBox
             {
-                Size = new Size(10, 10),
-                Location = new Point(14, 15),
-                BackColor = ProviderDotColors[(int)id],
+                Size = new Size(28, 28),
+                SizeMode = PictureBoxSizeMode.Zoom,
+                Location = new Point(13, 12),
+                Image = ProviderLogo(id),
             };
-
             var title = new Label
             {
                 AutoSize = true,
-                Font = new Font(Font, FontStyle.Bold),
-                Location = new Point(30, 10),
+                Font = new Font("Microsoft YaHei UI", 10.5F, FontStyle.Bold),
+                ForeColor = TextStrong,
+                BackColor = Color.White,
+                Location = new Point(51, 16),
                 Text = L($"monitor.provider.{id.ToString().ToLowerInvariant()}"),
             };
             var badge = new BadgeLabel
             {
-                Location = new Point(title.Right + 8, 12),
+                Location = new Point(160, 16),
+                Font = new Font("Microsoft YaHei UI", 8F),
             };
-            var state = new Label
+            var updated = new Label
             {
                 AutoSize = true,
                 ForeColor = TextSecondary,
-                Font = new Font(Font.FontFamily, 8F),
-                Location = new Point(14, 34),
+                BackColor = Color.White,
+                Font = new Font("Microsoft YaHei UI", 8F),
+                Location = new Point(220, 19),
+            };
+            var status = new Label
+            {
+                AutoSize = false,
+                AutoEllipsis = true,
+                ForeColor = TextSecondary,
+                BackColor = Color.White,
+                Font = new Font("Microsoft YaHei UI", 8F),
+                Location = new Point(13, 58),
             };
             var rows = new FlowLayoutPanel
             {
                 FlowDirection = FlowDirection.TopDown,
                 WrapContents = false,
                 AutoSize = true,
-                Location = new Point(2, 56),
-                Width = 346,
+                Location = new Point(0, 51),
+                Width = 508,
                 Margin = new Padding(0),
+                BackColor = Color.White,
             };
 
-            card.Controls.Add(dot);
+            card.Controls.Add(logo);
             card.Controls.Add(title);
             card.Controls.Add(badge);
-            card.Controls.Add(state);
+            card.Controls.Add(updated);
+            card.Controls.Add(status);
             card.Controls.Add(rows);
 
             _cards[id] = card;
+            _cardLogos[id] = logo;
             _cardTitles[id] = title;
             _cardBadges[id] = badge;
-            _cardStates[id] = state;
+            _cardUpdated[id] = updated;
+            _cardStates[id] = status;
             _cardRows[id] = rows;
             _quotaView.Controls.Add(card);
         }
@@ -580,7 +679,7 @@ public sealed class MonitorForm : Form
     private void UpdateQuotaView()
     {
         if (IsDisposed) return;
-        var cardWidth = Math.Max(200, _quotaView.ClientSize.Width - 24);
+        var cardWidth = Math.Max(200, _quotaView.ClientSize.Width - _quotaView.Padding.Horizontal);
         foreach (var id in Enum.GetValues<ProviderId>())
         {
             if (_cards.TryGetValue(id, out var card) && card.Width != cardWidth) card.Width = cardWidth;
@@ -596,40 +695,65 @@ public sealed class MonitorForm : Form
         var card = _cards[state.Provider];
         var title = _cardTitles[state.Provider];
         var badge = _cardBadges[state.Provider];
+        var updated = _cardUpdated[state.Provider];
         var statusLabel = _cardStates[state.Provider];
         var rowsPanel = _cardRows[state.Provider];
 
         var snapshot = state.LastGood;
         var hasFailure = state.LastAttempt is { HasError: true };
 
-        // Status line: refresh state, failure and freshness are independent facts (§5.3).
+        // Header row like the reference: name + tier badge + "更新于 HH:mm" on ONE line.
+        // The persistent "· 有效" word is gone — the timestamp IS the freshness signal;
+        // an in-flight refresh is appended so progress stays visible.
+        var updatedText = snapshot?.SucceededAtUtc is { } s ? L("monitor.updated", FormatTimeShort(s)) : "";
+        if (state.Refreshing)
+        {
+            updatedText = updatedText.Length == 0
+                ? L("monitor.state_refreshing")
+                : updatedText + " · " + L("monitor.state_refreshing");
+        }
+        updated.Text = updatedText;
+        updated.Visible = updatedText.Length > 0;
+
+        // Tier badge is PROVIDER-level only where the source means it that way: Codex's
+        // plan tier sits next to the provider name; MiniMax reports none; the Ark tier
+        // belongs to its product section header, not here.
+        var tier = snapshot?.Buckets.FirstOrDefault(b => b.Tier is not null)?.Tier;
+        badge.Text = state.Provider == ProviderId.Codex && tier is not null ? TierDisplay(tier) : "";
+        var showBadge = badge.Text.Length > 0;
+        badge.Visible = showBadge;
+        badge.FitToText();
+
+        // Status line BELOW the header rule, only for facts the user must know —
+        // failure, staleness, disabled, paused, or nothing fetched yet. A healthy
+        // card shows no status line at all.
         var parts = new List<string>();
-        if (!state.Enabled) parts.Add(L("monitor.state_disabled"));
-        if (state.Refreshing) parts.Add(L("monitor.state_refreshing"));
+        if (!state.Enabled) parts.Add(L("monitor.state_disabled") + " · " + L("monitor.state_disabled_hint"));
         if (hasFailure) parts.Add(L(ErrorKeyFor(state.LastAttempt!.Error)));
         if (state.Stale) parts.Add(L("monitor.state_stale"));
-        else if (snapshot is not null && !hasFailure && !state.Refreshing) parts.Add(L("monitor.state_ok"));
         if (state.PausedUntilUserRetry && state.Enabled) parts.Add(L("monitor.paused_short"));
+        if (state.Enabled && snapshot is null && !hasFailure) parts.Add(L("monitor.state_no_data_yet"));
+        statusLabel.Text = string.Join(" · ", parts);
+        var showStatus = parts.Count > 0;
+        statusLabel.Visible = showStatus;
+        statusLabel.ForeColor = hasFailure ? BarRed : state.Stale ? StaleText : TextSecondary;
 
-        var updated = snapshot?.SucceededAtUtc is { } s ? L("monitor.updated", FormatTimeShort(s)) : null;
-        var statusBits = new List<string>();
-        if (updated is not null) statusBits.Add(updated);
-        statusBits.AddRange(parts);
-        statusLabel.Text = statusBits.Count == 0 ? L("monitor.state_no_data_yet") : string.Join(" · ", statusBits);
-        statusLabel.ForeColor = hasFailure ? BarRed : TextSecondary;
-        var maxStatus = new Size(card.Width - 28, 0);
-        if (statusLabel.MaximumSize != maxStatus) statusLabel.MaximumSize = maxStatus;
+        // Header geometry from measured widths — everything here is in current-DPI
+        // device pixels, so runtime offsets go through S(). Layout decisions read the
+        // LOCAL booleans, never Control.Visible: that getter returns the WHOLE ancestor
+        // chain state and lies during construction / BeginInvoke timing.
+        title.Left = S(51);
+        badge.Left = title.Right + S(10);
+        badge.Top = title.Top + (title.Height - badge.Height) / 2;
+        updated.Left = showBadge ? badge.Right + S(10) : badge.Left;
+        updated.Top = title.Top + (title.Height - updated.Height) / 2;
+        statusLabel.SetBounds(S(13), S(51) + S(8), card.Width - 2 * S(13), S(18));
 
-        // Rows start below the (possibly wrapping) status line — never at a fixed offset.
-        // Assignments are guarded: each one triggers a full nested layout pass.
-        var rowsY = statusLabel.Bottom + 6;
-        if (rowsPanel.Location != new Point(2, rowsY)) rowsPanel.Location = new Point(2, rowsY);
-        if (rowsPanel.Width != card.Width - 34) rowsPanel.Width = card.Width - 34;
-
-        badge.Text = snapshot?.Buckets.FirstOrDefault(b => b.Tier is not null)?.Tier ?? "";
-        badge.Visible = badge.Text.Length > 0;
-        badge.FitToText();
-        badge.Left = title.Left + title.PreferredWidth + 8;
+        // Rows start below the rule (or below the status line) — never at a fixed
+        // offset from a control that may or may not be visible.
+        var rowsY = S(51) + (showStatus ? S(8) + S(18) + S(4) : S(4));
+        if (rowsPanel.Location != new Point(0, rowsY)) rowsPanel.Location = new Point(0, rowsY);
+        if (rowsPanel.Width != card.Width) rowsPanel.Width = card.Width;
 
         var dimmed = state.Stale || hasFailure;
 
@@ -639,61 +763,74 @@ public sealed class MonitorForm : Form
 
         if (!state.Enabled)
         {
-            rows.Add(new RowDesc(L("monitor.state_disabled_hint"), "", null, null, "", true, null));
+            // The status line under the header carries the whole message (disabled +
+            // hint); an inert card renders no metric rows at all.
         }
         else if (snapshot is null)
         {
-            rows.Add(new RowDesc(
-                hasFailure ? L(ErrorKeyFor(state.LastAttempt!.Error)) : L("monitor.state_no_data_yet"),
-                "", null, null, "", true, null));
+            // Same — "尚未获取数据" or the failure reason is already on the status line.
         }
         else
         {
             foreach (var bucket in snapshot.Buckets)
             {
+                if (state.Provider == ProviderId.Ark)
+                {
+                    // Product level lives HERE — "Coding Plan [Pro]" as a full-width
+                    // section strip, like the reference. Never next to the provider
+                    // name, never flattened into a window row.
+                    rows.Add(new RowDesc(ArkProductDisplay(bucket), "", null, null, "",
+                        dimmed, Badge: bucket.Tier is { } productTier ? TierDisplay(productTier) : "",
+                        SectionHeader: true));
+                }
+
                 if (bucket.Error is not null)
                 {
-                    rows.Add(new RowDesc(bucket.DisplayName ?? bucket.SourceKey, "", null, null,
-                        "", true, L("monitor.bucket_error")));
+                    rows.Add(MetricRow(bucket.DisplayName ?? bucket.SourceKey, L("monitor.bucket_error"),
+                        "", null, null, "", true));
                     continue;
                 }
                 if (bucket.Subscribed == false)
                 {
-                    rows.Add(new RowDesc(bucket.DisplayName ?? bucket.SourceKey, L("monitor.no_subscription"),
-                        null, null, "", true, null));
+                    rows.Add(MetricRow(bucket.DisplayName ?? bucket.SourceKey, L("monitor.no_subscription"),
+                        "", null, null, "", true));
                     continue;
                 }
                 if (bucket.Windows.Count == 0)
                 {
-                    rows.Add(new RowDesc(bucket.DisplayName ?? bucket.SourceKey, L("monitor.not_returned"),
-                        null, null, "", true, null));
+                    rows.Add(MetricRow(bucket.DisplayName ?? bucket.SourceKey, L("monitor.not_returned"),
+                        "", null, null, "", true));
                     continue;
                 }
 
                 foreach (var window in bucket.Windows)
                 {
                     // Row identity per provider, mirroring the reference semantics:
-                    // Codex rows are "Codex · 每周" (bucket · window); MiniMax primary model
-                    // shows windows as titles (当前周期/每周), secondary models as
-                    // "视频赠送 · 当前周期"; Ark rows are pure windows. The window tag is
-                    // merged into the TITLE TEXT so AutoEllipsis governs crowding — a pill
-                    // control between title and percent cannot fit at every width/DPI.
-                    var windowTag = WindowTitle(window);
-                    var rowTitle = state.Provider switch
+                    // Codex rows read "Codex [每周]" / "Codex Spark [5 小时]" (model name
+                    // as the FULL title, window as the badge — no manual truncation, the
+                    // name column ellipsizes only when it truly does not fit); MiniMax's
+                    // primary model shows windows as titles (当前周期/每周), secondary
+                    // models as "视频赠送 [当日]"; Ark rows read "短周期 [当前会话]" and
+                    // plain "每周".
+                    var (rowTitle, rowBadge) = state.Provider switch
                     {
-                        ProviderId.Codex => $"{ShortName(bucket.DisplayName ?? bucket.SourceKey, 10)} · {windowTag}",
+                        ProviderId.Codex => (CodexModelDisplay(bucket), WindowTitle(window)),
                         ProviderId.MiniMax when IsMiniMaxSecondaryModel(bucket) =>
-                            $"{MiniMaxModelDisplay(bucket)} · {windowTag}",
-                        _ => windowTag,
+                            (MiniMaxModelDisplay(bucket), MiniMaxWindowBadge(window)),
+                        ProviderId.MiniMax => (WindowTitle(window), ""),
+                        ProviderId.Ark => ArkRowTitles(window),
+                        _ => (WindowTitle(window), ""),
                     };
 
                     double? fraction = null;
                     Color? barColor = null;
                     var percentText = "";
+                    Color? valueColor = null;
 
                     if (window.IsUnlimited)
                     {
                         percentText = L("monitor.unlimited");
+                        valueColor = UnlimitedBlue; // "∞ 无限制" is blue and carries no bar
                     }
                     else if (!window.HasAnyQuotaField)
                     {
@@ -730,15 +867,17 @@ public sealed class MonitorForm : Form
                     }
 
                     // MiniMax-style absolute counts replace the percent text when present
-                    // ("已用 0/3 次"); the remaining bar still shows the headroom.
+                    // ("已用 0 / 3 次") and drop the bar — a count is not a percent.
                     if (state.Provider == ProviderId.MiniMax &&
                         window.UsedText is not null && window.TotalText is not null && !window.IsUnlimited)
                     {
                         percentText = L("monitor.counts_used", window.UsedText, window.TotalText);
+                        fraction = null;
+                        barColor = null;
                     }
 
-                    rows.Add(new RowDesc(rowTitle, percentText, fraction, barColor,
-                        ResetText(window), dimmed, null));
+                    rows.Add(MetricRow(rowTitle, percentText, rowBadge, fraction, barColor,
+                        ResetText(window), dimmed, valueColor));
                 }
             }
 
@@ -753,16 +892,18 @@ public sealed class MonitorForm : Form
                     .OrderBy(c => c.ExpiresAtUtc)
                     .FirstOrDefault();
                 var chevron = _creditsExpanded ? " ⌄" : " ›";
+                var creditsTitle = credits.Details is { Count: > 0 } ? credits.Details[0].Title : L("monitor.badge.reset_credit");
                 rows.Add(new RowDesc(
-                    credits.Details is { Count: > 0 } ? credits.Details[0].Title : L("monitor.badge.reset_credit"),
+                    creditsTitle,
                     L("monitor.reset_credits_count", credits.AvailableCount) + chevron,
                     null, null,
                     nextExpiry?.ExpiresAtUtc is { } exp ? $"{exp.ToLocalTime():M/d HH:mm} " + L("monitor.credit_expiry_suffix") : "—",
-                    dimmed, null, Clickable: true));
+                    dimmed, Clickable: true,
+                    Badge: creditsTitle == L("monitor.badge.reset_credit") ? "" : L("monitor.badge.reset_credit")));
 
                 if (credits.Details is null)
                 {
-                    if (_creditsExpanded) rows.Add(new RowDesc(L("monitor.reset_credits_count_only"), "", null, null, "", dimmed, null));
+                    if (_creditsExpanded) rows.Add(MetricRow(L("monitor.reset_credits_count_only"), "", "", null, null, "", dimmed));
                 }
                 else if (_creditsExpanded)
                 {
@@ -777,9 +918,22 @@ public sealed class MonitorForm : Form
                         {
                             line += $" [{status}]";
                         }
-                        rows.Add(new RowDesc("• " + line, "", null, null, "", dimmed, null));
+                        rows.Add(MetricRow("• " + line, "", "", null, null, "", dimmed));
                     }
                 }
+            }
+        }
+
+        // Separators: a metric row that directly follows another metric row gets the
+        // 1px top hairline (reference .metric+.metric:before). Section headers and the
+        // first row under the header rule stay clean.
+        for (var i = 0; i < rows.Count; i++)
+        {
+            if (rows[i].SectionHeader) continue;
+            var prevIsMetric = i > 0 && !rows[i - 1].SectionHeader;
+            if (rows[i].SeparatorAbove != prevIsMetric)
+            {
+                rows[i] = rows[i] with { SeparatorAbove = prevIsMetric };
             }
         }
 
@@ -787,6 +941,11 @@ public sealed class MonitorForm : Form
 
         SizeCard(card, rowsPanel);
     }
+
+    /// <summary>A normal quota row (the only kind the metric grid renders).</summary>
+    private static RowDesc MetricRow(string title, string value, string badge,
+        double? fraction, Color? barColor, string right, bool dimmed, Color? valueColor = null) =>
+        new(title, value, fraction, barColor, right, dimmed, Badge: badge, ValueColor: valueColor);
 
     /// <summary>
     /// Applies the row descriptors: a STRUCTURAL rebuild only when the signature changed,
@@ -798,8 +957,10 @@ public sealed class MonitorForm : Form
         // Clickable is part of the signature: it decides whether the row gets a click
         // handler, and an in-place refresh never touches handlers — a row that becomes
         // clickable (or stops being one) MUST be rebuilt, not refreshed in place.
+        // Badge/ValueColor/SectionHeader/SeparatorAbove decide STRUCTURE, so they are in
+        // the signature too; a differing title/value/rebuilds via the same rule.
         var signature = string.Join("|", rows.Select(r =>
-            $"{r.Title}#{r.Percent}#{r.Fraction}#{r.BarColor}#{r.Right}#{r.Dimmed}#{r.Note}#{r.Clickable}"));
+            $"{r.Title}#{r.Percent}#{r.Fraction}#{r.BarColor}#{r.Right}#{r.Dimmed}#{r.Clickable}#{r.Badge}#{r.ValueColor}#{r.SectionHeader}#{r.SeparatorAbove}"));
 
         if (_cardSignatures.TryGetValue(id, out var previous) &&
             previous == signature &&
@@ -849,9 +1010,6 @@ public sealed class MonitorForm : Form
                         bar.FillColor = color;
                         bar.Invalidate();
                     }
-                    break;
-                case "n" when child.Text != (desc.Note ?? ""):
-                    child.Text = desc.Note ?? "";
                     break;
             }
         }
@@ -927,121 +1085,233 @@ public sealed class MonitorForm : Form
         };
     }
 
-    private static string ShortName(string name, int maxLength = 12) =>
-        name.Length <= maxLength ? name : name[..(maxLength - 1)] + "…";
+    /// <summary>
+    /// Codex rows carry the PRODUCT name like the reference ("Codex Spark"), not the raw
+    /// model id: the "GPT-x.y-" generation prefix is dropped and dashes become spaces.
+    /// Anything else passes through untouched.
+    /// </summary>
+    private static string CodexModelDisplay(QuotaBucket bucket)
+    {
+        var raw = bucket.DisplayName ?? bucket.SourceKey;
+        if (raw.StartsWith("GPT-", StringComparison.OrdinalIgnoreCase))
+        {
+            var productStart = raw.IndexOf("Codex", StringComparison.OrdinalIgnoreCase);
+            if (productStart > 0) return raw[productStart..].Replace('-', ' ');
+        }
+        return raw;
+    }
 
     /// <summary>
-    /// One quota row, reference-style: title + badge on the left, remaining % in the
-    /// middle column, reset time right-aligned, and a full-width bar underneath.
-    /// Widths derive from the row panel — no fixed pixel math.
+    /// Badge tag for a MiniMax secondary-model row: the video gift's daily window reads
+    /// 当日 (not the generic 每日) — the macOS reference's wording for this row. Sources
+    /// that omit the duration fall back to the interval key, which for the video model
+    /// is the daily allowance.
+    /// </summary>
+    private static string MiniMaxWindowBadge(QuotaWindow window) =>
+        window.WindowDurationMinutes == 1440 ||
+        (window.WindowDurationMinutes is null && window.SourceKey == "interval")
+            ? LocalizationService.Get("monitor.window.day")
+            : WindowTitle(window);
+
+    /// <summary>
+    /// Ark rows keep the reference pairing: the session window is 短周期 [当前会话],
+    /// every other window shows as a plain title (每周) with no badge.
+    /// </summary>
+    private static (string Title, string Badge) ArkRowTitles(QuotaWindow window) =>
+        window.SourceKey == "session"
+            ? (LocalizationService.Get("monitor.window.session_short"),
+               LocalizationService.Get("monitor.window.session_badge"))
+            : (WindowTitle(window), "");
+
+    /// <summary>
+    /// Product display name for an Ark bucket: "coding-plan" → "Coding Plan" — word-wise
+    /// capitalization of the source identifier, the same rule the macOS mapper applies.
+    /// Already-human names (Chinese, mixed case) pass through effectively unchanged.
+    /// </summary>
+    private static string ArkProductDisplay(QuotaBucket bucket)
+    {
+        var raw = bucket.DisplayName ?? bucket.SourceKey;
+        var words = raw.Split(['-', '_', ' '], StringSplitOptions.RemoveEmptyEntries);
+        return words.Length == 0 ? raw : string.Join(" ",
+            words.Select(w => char.ToUpperInvariant(w[0]) + w[1..]));
+    }
+
+    /// <summary>Source tiers are lowercase tags ("pro"); the UI shows them capitalized.</summary>
+    private static string TierDisplay(string tier) =>
+        tier.Length == 0 ? tier : char.ToUpperInvariant(tier[0]) + tier[1..];
+
+    /// <summary>
+    /// One quota row on the reference metric grid: fixed NAME column, flexible VALUE
+    /// column (text over a 7px bar), fixed TIME column, 12-logical gaps. Column widths
+    /// are the reference ratios (144 / * / 106 over a 482-logical content width at
+    /// 540), so they hold at every DPI and window width without absolute pixel math.
     /// </summary>
     private Control AddRow(FlowLayoutPanel rowsPanel, RowDesc desc)
     {
-        var title = desc.Title;
-        var percentText = desc.Percent;
-        var fraction = desc.Fraction;
-        var barColor = desc.BarColor;
-        var rightText = desc.Right;
-        var dimmed = desc.Dimmed;
-        var note = desc.Note;
+        var rowWidth = Math.Max(200, rowsPanel.Width);
 
-        var w = Math.Max(200, rowsPanel.Width - 4);
+        if (desc.SectionHeader)
+        {
+            // Product strip ("Coding Plan [Pro]"): full card width, light gray, 36 high.
+            var strip = new Panel
+            {
+                Width = rowWidth,
+                Height = S(36),
+                Margin = new Padding(0),
+                BackColor = SectionBack,
+            };
+            var labelFont = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold);
+            var labelWidth = TextRenderer.MeasureText(desc.Title, labelFont).Width;
+            var label = new Label
+            {
+                Text = desc.Title,
+                Tag = "t",
+                AutoSize = false,
+                AutoEllipsis = true,
+                BackColor = SectionBack,
+                ForeColor = TextStrong,
+                Font = labelFont,
+                Location = new Point(S(13), (S(36) - S(20)) / 2),
+                Size = new Size(Math.Min(labelWidth + 2, rowWidth - 2 * S(13)), S(20)),
+            };
+            strip.Controls.Add(label);
+            if (desc.Badge.Length > 0)
+            {
+                var productBadge = NewRowBadge(desc.Badge);
+                productBadge.Left = Math.Min(label.Right + S(8), rowWidth - S(13) - productBadge.Width);
+                productBadge.Top = (S(36) - productBadge.Height) / 2;
+                strip.Controls.Add(productBadge);
+            }
+            rowsPanel.Controls.Add(strip);
+            return strip;
+        }
+
+        var hasBar = desc.Fraction is { } && desc.BarColor is { };
+        var rowHeight = hasBar ? S(54) : S(40);
         var row = new Panel
         {
-            AutoSize = true,
-            Width = w,
-            Margin = new Padding(0, 3, 0, 3),
+            Width = rowWidth,
+            Height = rowHeight,
+            Margin = new Padding(0),
             BackColor = Color.White,
         };
+        if (desc.SeparatorAbove)
+        {
+            var separatorPen = new Pen(Hairline);
+            row.Paint += (_, e) => e.Graphics.DrawLine(separatorPen, S(13), 0, rowWidth, 0);
+            row.Disposed += (_, _) => separatorPen.Dispose();
+        }
 
-        var fore = dimmed ? TextSecondary : SystemColors.ControlText;
+        // Reference column geometry over the content width (row minus the 13-logical
+        // side insets): 144 name / flexible value / 106 time, 12-logical gaps.
+        var inset = S(13);
+        var contentWidth = rowWidth - 2 * inset;
+        var nameWidth = (int)Math.Round(contentWidth * (144.0 / 482.0));
+        var rightWidth = (int)Math.Round(contentWidth * (106.0 / 482.0));
+        var gap = S(12);
+        var valueX = inset + nameWidth + gap;
+        var valueWidth = Math.Max(S(60), contentWidth - nameWidth - rightWidth - 2 * gap);
+        var rightX = rowWidth - inset - rightWidth;
+        var lineHeight = S(20);
 
-        // PROPORTIONAL column budget (fractions of the row width) — fixed pixel columns
-        // desync from scaled fonts at 150% DPI and crowd/clip each other.
-        // title 0..0.40w | percent 0.44w..0.72w | reset 0.73w..w | bar under percent.
-        var titleW = (int)(w * 0.38);
-        var percentX = (int)(w * 0.42);
-        var percentW = (int)(w * 0.26);
-        var rightX = (int)(w * 0.70);
-
+        // Title + window badge share the name column: the badge sits right after the
+        // measured text when both fit; otherwise the title ellipsizes and the badge
+        // docks at the column end ("Codex Spa…" is exactly what we must NOT ship).
+        // The +6 slack covers Label's internal padding — without it a text that fits
+        // its measure exactly still ellipsizes. Rows with NO badge, value and time
+        // (expanded credit details) are single full-width lines instead.
+        var measuredTitle = TextRenderer.MeasureText(desc.Title, Font).Width;
+        var fullLineRow = desc.Badge.Length == 0 && desc.Percent.Length == 0 && desc.Right.Length == 0;
+        var rowBadge = desc.Badge.Length > 0 ? NewRowBadge(desc.Badge) : null;
+        var badgeGap = S(6); // reference .metric-label gap: 6 — tighter than the column gap
+        var badgeSpace = rowBadge is null ? 0 : rowBadge.Width + badgeGap;
+        var titleAvailable = fullLineRow
+            ? contentWidth
+            : Math.Max(lineHeight, nameWidth - badgeSpace);
         var titleLabel = new Label
         {
-            Text = title,
+            Text = desc.Title,
             Tag = "t",
             AutoSize = false,
-            AutoEllipsis = true,
-            Location = new Point(0, 0),
-            Size = new Size(titleW, 20),
-            ForeColor = fore,
+            AutoEllipsis = !fullLineRow,
+            BackColor = row.BackColor,
+            ForeColor = desc.Dimmed ? TextSecondary : TextPrimary,
         };
+        var titleY = (rowHeight - lineHeight) / 2;
+        titleLabel.SetBounds(inset, titleY, Math.Min(measuredTitle + S(8), titleAvailable), lineHeight);
         row.Controls.Add(titleLabel);
-
-        var percentLabel = new Label
+        if (rowBadge is not null)
         {
-            Text = percentText,
+            rowBadge.Left = measuredTitle <= titleAvailable
+                ? Math.Min(titleLabel.Right + badgeGap, inset + nameWidth - rowBadge.Width)
+                : inset + nameWidth - rowBadge.Width;
+            rowBadge.Top = (rowHeight - rowBadge.Height) / 2;
+            row.Controls.Add(rowBadge);
+        }
+
+        // VALUE column: text on the first line, 7px bar underneath — or a single
+        // vertically centered line for compact rows (unlimited, counts, credits).
+        // Empty labels are not added at all: a painted white rectangle would sit ON
+        // TOP of a full-width title and erase its tail.
+        var valueLabel = new Label
+        {
+            Text = desc.Percent,
             Tag = "p",
             AutoSize = false,
             AutoEllipsis = true,
-            Size = new Size(Math.Max(60, percentW), 20),
-            Location = new Point(percentX, 0),
-            ForeColor = fore,
+            BackColor = row.BackColor,
+            ForeColor = desc.ValueColor ?? (desc.Dimmed ? TextSecondary : TextPrimary),
         };
-        row.Controls.Add(percentLabel);
-
-        var rightLabel = new Label
+        if (hasBar)
         {
-            Text = rightText,
-            Tag = "r",
-            AutoSize = false,
-            AutoEllipsis = true,
-            TextAlign = ContentAlignment.MiddleRight,
-            Size = new Size(w - rightX - 2, 20),
-            Location = new Point(rightX, 0),
-            ForeColor = dimmed ? fore : TextSecondary,
-            Font = new Font(Font.FontFamily, 8F),
-        };
-        row.Controls.Add(rightLabel);
+            valueLabel.SetBounds(valueX, S(12), valueWidth, S(18));
+            row.Controls.Add(valueLabel);
 
-        if (fraction is { } f && barColor is { } color)
-        {
-            // The bar lives under the percent column, like the reference — the reset time
-            // stays unobstructed at the right.
             var bar = new QuotaBar
             {
                 Tag = "b",
-                Fraction = f,
-                FillColor = color,
-                Size = new Size(Math.Max(40, w - percentX - 10), 6),
-                Location = new Point(percentX, 23),
-                BackColor = Color.White,
+                Fraction = desc.Fraction ?? 0,
+                FillColor = desc.BarColor ?? BarGreen,
+                BackColor = row.BackColor,
             };
+            bar.SetBounds(valueX, S(35), valueWidth, S(7));
             row.Controls.Add(bar);
-            row.Height = 35;
         }
-        else
+        else if (desc.Percent.Length > 0)
         {
-            row.Height = 24;
+            valueLabel.SetBounds(valueX, (rowHeight - lineHeight) / 2, valueWidth, lineHeight);
+            row.Controls.Add(valueLabel);
         }
 
-        if (note is not null)
+        if (desc.Right.Length > 0)
         {
-            var noteLabel = new Label
+            var rightLabel = new Label
             {
-                Text = note,
-                Tag = "n",
+                Text = desc.Right,
+                Tag = "r",
                 AutoSize = false,
                 AutoEllipsis = true,
-                Size = new Size(w, 16),
-                Location = new Point(0, row.Height - 2),
+                TextAlign = ContentAlignment.MiddleRight,
+                BackColor = row.BackColor,
                 ForeColor = TextSecondary,
-                Font = new Font(Font.FontFamily, 7.5F),
+                Font = new Font("Microsoft YaHei UI", 8F),
             };
-            row.Controls.Add(noteLabel);
-            row.Height += 17;
+            rightLabel.SetBounds(rightX, (rowHeight - lineHeight) / 2, rightWidth, lineHeight);
+            row.Controls.Add(rightLabel);
         }
 
         rowsPanel.Controls.Add(row);
         return row;
+    }
+
+    /// <summary>Window badge for a metric row — smaller type than the header tier badge.</summary>
+    private BadgeLabel NewRowBadge(string text)
+    {
+        var badge = new BadgeLabel { Font = new Font("Microsoft YaHei UI", 7.5F) };
+        badge.Text = text;
+        badge.FitToText();
+        badge.Height = S(18);
+        return badge;
     }
 
     private void SizeCard(Panel card, FlowLayoutPanel rowsPanel)
@@ -1049,7 +1319,7 @@ public sealed class MonitorForm : Form
         // Force the flow panel to lay out NOW so its Height reflects the fresh rows —
         // reading it before layout returns the stale (too tall/short) value.
         rowsPanel.PerformLayout();
-        card.Height = rowsPanel.Location.Y + rowsPanel.Height + 12;
+        card.Height = rowsPanel.Location.Y + rowsPanel.Height + S(12);
     }
 
     private static string ResetText(QuotaWindow window)
@@ -1350,18 +1620,19 @@ public sealed class MonitorForm : Form
         AddRow(_leftClickCheck, topMargin: 4);
 
         // —— 通用 ——
+        // Language sits at the TOP of the general group (2026-09-13 layout review).
         Section("monitor.settings.group_general");
-        _memoryCheck.AutoSize = true;
-        AddRow(_memoryCheck);
-
-        _autoStartCheck = new CheckBox { AutoSize = true, Text = L("settings.autostart") };
-        AddRow(_autoStartCheck);
-
         var languageLabel = new Label { Text = L("settings.language"), AutoSize = true, Margin = new Padding(0, 4, 8, 0) };
         _languageBox.DropDownStyle = ComboBoxStyle.DropDownList;
         _languageBox.Width = 110;
         _languageBox.Items.AddRange(new object[] { "中文", "English" });
         AddRow(RowOf(languageLabel, _languageBox));
+
+        _memoryCheck.AutoSize = true;
+        AddRow(_memoryCheck);
+
+        _autoStartCheck = new CheckBox { AutoSize = true, Text = L("settings.autostart") };
+        AddRow(_autoStartCheck);
 
         // —— 监控 ——
         Section("monitor.settings.group_monitoring");
@@ -1392,6 +1663,7 @@ public sealed class MonitorForm : Form
 
         // —— 保存 ——
         _saveButton.AutoSize = true;
+        _saveButton.MinimumSize = new Size(96, 0); // never a sliver of a click target
         _saveButton.FlatStyle = FlatStyle.Flat;
         _saveButton.FlatAppearance.BorderSize = 0;
         _saveButton.BackColor = Accent;
@@ -1527,6 +1799,7 @@ public sealed class MonitorForm : Form
                 title.Text = L($"monitor.provider.{id.ToString().ToLowerInvariant()}");
             }
         }
+        LayoutTabs();
     }
 
     // ---------- statics shared with tests / tray ----------
@@ -1549,8 +1822,10 @@ public sealed class MonitorForm : Form
         return label ?? sourceKey;
     }
 
+    /// <summary>Integers render bare ("65"); fractions keep their real precision
+    /// ("97.93") — trimming to one decimal was lossy against the reference.</summary>
     internal static string FormatPercent(double value) =>
-        value == Math.Floor(value) ? ((int)value).ToString() : value.ToString("0.0");
+        value == Math.Floor(value) ? ((int)value).ToString() : value.ToString("0.##");
 
     internal static string FormatBytes(ulong bytes)
     {
@@ -1683,30 +1958,33 @@ public sealed class MonitorForm : Form
             base.OnPaint(e);
             var g = e.Graphics;
             g.Clear(BackColor);
-            var track = new Rectangle(0, Height / 2 - 3, Width, 6);
-            using var trackBrush = new SolidBrush(Color.FromArgb(235, 235, 240));
-            using var trackPath = RoundedPath(track, 3);
+            // Reference: 7-logical-tall fully rounded track (#f0f1f2) and fill.
+            using var trackBrush = new SolidBrush(TrackBack);
+            using var trackPath = RoundedPath(new Rectangle(0, 0, Width - 1, Height - 1), Height / 2);
             g.FillPath(trackBrush, trackPath);
 
             var fillWidth = (int)Math.Round(Width * Math.Clamp(Fraction, 0, 1));
-            if (fillWidth > 0)
+            // 0% draws NOTHING — a forced minimum-width stub would fake usage that is
+            // not there (the reference keeps an empty track for Ark's 已用 0%).
+            if (Fraction > 0 && fillWidth > 0)
             {
-                var fill = new Rectangle(0, Height / 2 - 3, Math.Max(fillWidth, 6), 6);
                 using var fillBrush = new SolidBrush(FillColor);
-                using var fillPath = RoundedPath(fill, 3);
+                using var fillPath = RoundedPath(
+                    new Rectangle(0, 0, Math.Max(fillWidth - 1, Height / 2), Height - 1), Height / 2);
                 g.FillPath(fillBrush, fillPath);
             }
         }
     }
 
-    /// <summary>Small rounded badge text (tier names like pro / personal, plan labels).</summary>
+    /// <summary>Small rounded badge text (tier names like Pro, plan labels, window tags).
+    /// Flat #e9e9eb fill with a 5-logical radius — not a pill — per the reference.</summary>
     internal sealed class BadgeLabel : Control
     {
         public BadgeLabel()
         {
             DoubleBuffered = true;
             BackColor = Color.White;
-            ForeColor = Color.FromArgb(99, 99, 104);
+            ForeColor = BadgeText;
             Size = new Size(36, 18);
         }
 
@@ -1719,7 +1997,8 @@ public sealed class MonitorForm : Form
         public void FitToText()
         {
             var textSize = TextRenderer.MeasureText(Text, Font);
-            Width = Math.Max(20, textSize.Width + 12);
+            var padding = (int)Math.Round(14 * (DeviceDpi / 96.0));
+            Width = Math.Max(20, textSize.Width + padding);
             Invalidate();
         }
 
@@ -1730,11 +2009,12 @@ public sealed class MonitorForm : Form
             g.Clear(BackColor);
             if (Text.Length == 0) return;
 
+            var radius = (int)Math.Round(5 * (DeviceDpi / 96.0));
             var rect = new Rectangle(0, 0, Width - 1, Height - 1);
-            using var brush = new SolidBrush(Color.FromArgb(240, 240, 243));
-            using var path = RoundedPath(rect, rect.Height / 2);
+            using var brush = new SolidBrush(BadgeBack);
+            using var path = RoundedPath(rect, Math.Min(radius, rect.Height / 2));
             g.FillPath(brush, path);
-            TextRenderer.DrawText(g, Text, Font, rect, ForeColor,
+            TextRenderer.DrawText(g, Text, Font, rect, BadgeText,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
         }
 
@@ -1757,6 +2037,10 @@ public sealed class MonitorForm : Form
         private GraphicsPath? _cachedPath;
         private Size _cachedSize;
 
+        /// <summary>When set (logical 96-DPI units), a hairline is drawn under the quota
+        /// card's provider header, inset 13 like the reference.</summary>
+        public int? HeaderRuleY { get; set; }
+
         public CardPanel()
         {
             DoubleBuffered = true;
@@ -1768,13 +2052,24 @@ public sealed class MonitorForm : Form
             if (_cachedSize != Size || _cachedPath is null)
             {
                 _cachedPath?.Dispose();
-                _cachedPath = RoundedPath(new Rectangle(0, 0, Width - 1, Height - 1), 12);
+                var scale = DeviceDpi / 96.0;
+                var radius = (int)Math.Round(12 * scale);
+                _cachedPath = RoundedPath(new Rectangle(0, 0, Width - 1, Height - 1), radius);
                 _cachedSize = Size;
             }
             using var brush = new SolidBrush(BackColor);
             e.Graphics.FillPath(brush, _cachedPath);
             using var pen = new Pen(CardBorder);
             e.Graphics.DrawPath(pen, _cachedPath);
+
+            if (HeaderRuleY is { } ruleY)
+            {
+                var scale = DeviceDpi / 96.0;
+                var inset = (int)Math.Round(13 * scale);
+                var y = (int)Math.Round(ruleY * scale);
+                using var rulePen = new Pen(Hairline);
+                e.Graphics.DrawLine(rulePen, inset, y, Width - inset, y);
+            }
         }
 
         protected override void Dispose(bool disposing)
