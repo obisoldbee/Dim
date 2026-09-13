@@ -54,6 +54,9 @@ public sealed class MonitoringCoordinator : IDisposable
     public event Action? MemoryStateChanged;
     public event Action<QuotaReminderEvent>? ReminderFired;
 
+    /// <summary>Raised after ApplySettings so hosts can react (e.g. re-register the popover hotkey).</summary>
+    public event Action? SettingsApplied;
+
     public MonitoringCoordinator(
         IClock clock,
         IMemoryReader memoryReader,
@@ -466,6 +469,7 @@ public sealed class MonitoringCoordinator : IDisposable
             ScanAndDispatch();
         }
         RaiseQuotaStateChanged();
+        SettingsApplied?.Invoke();
     }
 
     public void RaiseQuotaStateChanged() => QuotaStateChanged?.Invoke();

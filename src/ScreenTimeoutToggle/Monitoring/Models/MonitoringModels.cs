@@ -248,6 +248,13 @@ public sealed record MonitoringSettings
     /// </summary>
     public string PopoverHotkey { get; init; } = "Ctrl+Alt+D";
 
+    /// <summary>
+    /// What a LEFT click on the tray icon does. The 2026-09-13 user feedback moved the
+    /// default to opening the popover (mode switching stays on the context menu and the
+    /// mode-switch hotkey); turning this off restores the original toggle behaviour.
+    /// </summary>
+    public bool LeftClickOpensPopover { get; init; } = true;
+
     public IReadOnlyList<ProviderSettings> Providers { get; init; } = CreateDefaultProviders();
 
     public ProviderSettings Provider(ProviderId id) =>

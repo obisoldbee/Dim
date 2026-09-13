@@ -108,6 +108,9 @@ public class TrayApp : ApplicationContext
     /// <summary>Global hotkey that toggles the popover (default Ctrl+Alt+D, monitoring.json configurable).</summary>
     private GlobalHotkeyService? _popoverHotkey;
 
+    /// <summary>The hotkey string the current <see cref="_popoverHotkey"/> registration is based on.</summary>
+    private string? _popoverHotkeyRegistered;
+
     /// <summary>
     /// Creates the tray application.
     /// </summary>
@@ -168,15 +171,21 @@ public class TrayApp : ApplicationContext
             Visible = true,
             Text = TooltipFor(_modeSvc.CurrentMode)
         };
-        // spec §2.1(1): a single left click toggles — it used to be DoubleClick, so a
-        // plain click did nothing.
-        // MouseClick, not Click: NotifyIcon.Click fires for ANY mouse button, so a
-        // right-click opening the context menu also toggled the mode. The button is
-        // checked explicitly so only a left click switches Work/Away.
+        // spec §2.1(1) + 2026-09-13 user feedback: a left click now OPENS THE POPOVER by
+        // default (configurable in monitoring.json / popover settings); the Work/Away
+        // toggle moves to the context menu and the Ctrl+Alt+S hotkey. ShouldToggleOnClick
+        // stays as the guard for the toggle behaviour.
         _notify.MouseClick += async (_, e) =>
         {
-            if (ShouldToggleOnClick(e.Button))
+            if (e.Button != MouseButtons.Left) return;
+            if (_monitorCoordinator is not null && _monitorCoordinator.Settings.LeftClickOpensPopover)
+            {
+                ToggleMonitorPopover();
+            }
+            else
+            {
                 await ToggleModeAsync();
+            }
         };
 
         BuildContextMenu();
@@ -276,7 +285,13 @@ public class TrayApp : ApplicationContext
         {
             Name = "monitorItem"
         };
-        var settingsItem = new ToolStripMenuItem(LocalizationService.Get("menu.settings"), null, (_, _) => OpenSettings());
+        // 2026-09-13: the classic settings dialog was merged into the popover's settings
+        // view (user request) — the menu item now opens that view. SettingsForm remains
+        // for its test coverage and as a fallback code path.
+        var settingsItem = new ToolStripMenuItem(LocalizationService.Get("menu.settings"), null, (_, _) => ToggleMonitorPopover(MonitorForm.View.Settings))
+        {
+            Name = "settingsItem"
+        };
         var exitItem = new ToolStripMenuItem(LocalizationService.Get("menu.exit"), null, (_, _) => ExitApp());
 
         menu.Items.AddRange(new ToolStripItem[] { _switchItem, monitorItem, settingsItem, new ToolStripSeparator(), exitItem });
@@ -307,6 +322,7 @@ public class TrayApp : ApplicationContext
                 MonitoringSettingsService.CreateDefault(),
                 new MonitoringCacheService());
             _monitorCoordinator.ReminderFired += OnQuotaReminder;
+            _monitorCoordinator.SettingsApplied += OnMonitoringSettingsApplied;
             _monitorCoordinator.Start();
 
             RegisterPopoverHotkey(_monitorCoordinator.Settings.PopoverHotkey);
@@ -320,6 +336,17 @@ public class TrayApp : ApplicationContext
         }
     }
 
+    /// <summary>Re-registers the popover hotkey when the user changed it in the settings view.</summary>
+    private void OnMonitoringSettingsApplied()
+    {
+        var desired = _monitorCoordinator?.Settings.PopoverHotkey ?? "Ctrl+Alt+D";
+        if (string.Equals(desired, _popoverHotkeyRegistered, StringComparison.OrdinalIgnoreCase)) return;
+
+        _popoverHotkey?.Dispose();
+        _popoverHotkey = null;
+        RegisterPopoverHotkey(desired);
+    }
+
     /// <summary>
     /// Registers the popover toggle hotkey on the tray's message window. Failure is
     /// non-fatal — the popover stays reachable from the context menu.
@@ -328,18 +355,20 @@ public class TrayApp : ApplicationContext
     {
         try
         {
-            var parsed = GlobalHotkeyService.ParseHotkeyString(
-                string.IsNullOrWhiteSpace(hotkeyString) ? "Ctrl+Alt+D" : hotkeyString);
+            var desired = string.IsNullOrWhiteSpace(hotkeyString) ? "Ctrl+Alt+D" : hotkeyString;
+            var parsed = GlobalHotkeyService.ParseHotkeyString(desired);
             if (parsed is null)
             {
                 LogService.Warn($"Invalid popover hotkey string '{hotkeyString}', keeping default Ctrl+Alt+D");
                 parsed = GlobalHotkeyService.ParseHotkeyString("Ctrl+Alt+D")!;
+                desired = "Ctrl+Alt+D";
             }
 
             _popoverHotkey = new GlobalHotkeyService(_msgWindow.Handle, PopoverHotkeyId);
             if (_popoverHotkey.Register(parsed))
             {
-                _popoverHotkey.HotkeyPressed += ToggleMonitorPopover;
+                _popoverHotkey.HotkeyPressed += () => ToggleMonitorPopover();
+                _popoverHotkeyRegistered = desired;
                 LogService.Info($"Popover hotkey registered: {parsed.Modifiers}+{parsed.Key}");
             }
             else
@@ -347,12 +376,14 @@ public class TrayApp : ApplicationContext
                 LogService.Warn($"Popover hotkey {parsed.Modifiers}+{parsed.Key} could not be registered (in use?)");
                 _popoverHotkey.Dispose();
                 _popoverHotkey = null;
+                _popoverHotkeyRegistered = null;
             }
         }
         catch (Exception ex)
         {
             LogService.Error("Popover hotkey registration failed", ex);
             _popoverHotkey = null;
+            _popoverHotkeyRegistered = null;
         }
     }
 
@@ -371,8 +402,10 @@ public class TrayApp : ApplicationContext
     /// <summary>
     /// Opens the usage &amp; memory popover (or toggles it closed). Never toggles the
     /// Work/Away mode — this runs from the context menu and the popover hotkey only.
+    /// <paramref name="initialView"/> selects the view when the popover has to be created
+    /// or is currently closed (used by the 设置… menu item to land on settings).
     /// </summary>
-    private void ToggleMonitorPopover()
+    private void ToggleMonitorPopover(MonitorForm.View initialView = MonitorForm.View.Quota)
     {
         if (_monitorCoordinator is null)
         {
@@ -384,14 +417,25 @@ public class TrayApp : ApplicationContext
 
         if (_monitorForm is { IsDisposed: false } && _monitorForm.Visible)
         {
-            _monitorForm.Close();
+            if (_monitorForm.CurrentView == initialView)
+            {
+                _monitorForm.Close();
+            }
+            else
+            {
+                _monitorForm.SetView(initialView);
+                _monitorForm.Activate();
+            }
             return;
         }
 
         if (_monitorForm is null || _monitorForm.IsDisposed)
         {
-            _monitorForm = new MonitorForm(_monitorCoordinator);
+            _monitorForm = new MonitorForm(_monitorCoordinator,
+                appConfigGetter: () => _config,
+                appConfigApplier: ApplyFullSettings);
         }
+        _monitorForm.SetView(initialView);
         _monitorForm.ShowAnchoredToTray(_notify);
     }
 
@@ -659,133 +703,139 @@ public class TrayApp : ApplicationContext
         using var form = new SettingsForm(_config, _hotkeySvc, _autoStartSvc);
         if (form.ShowDialog() == DialogResult.OK)
         {
-            var newCfg = form.Result;
-            var oldCfg = _config;
-            // Effective config = what actually gets persisted. Starts as the user's choice;
-            // a hotkey that fails to register is rolled back BEFORE saving so the config
-            // file never keeps a value we know is unusable (would fail again on next launch).
-            //
-            // From here on, ONLY effectiveCfg is used. Mixing newCfg and effectiveCfg in the
-            // same block is a maintenance trap: they differ in exactly one field, so every
-            // read has to be re-checked to know whether the user's choice or the rolled-back
-            // value is in play.
-            var effectiveCfg = newCfg;
+            ApplyFullSettings(form.Result);
+        }
+    }
 
-            // E1: Hotkey change — try new key first, rollback on failure (before persisting).
-            // The only thing read off newCfg from here on is the key the user ASKED for;
-            // every other field is read off effectiveCfg.
-            if (!Equals(newCfg.Hotkey, oldCfg.Hotkey))
+    /// <summary>
+    /// Applies a full app configuration (screen-timeout settings + hotkey + autostart +
+    /// language) — the shared apply path used by BOTH the classic settings dialog and the
+    /// popover's merged settings view. Returns true when the config file was saved.
+    /// </summary>
+    internal bool ApplyFullSettings(AppConfig newCfg)
+    {
+        var oldCfg = _config;
+        // Effective config = what actually gets persisted. Starts as the user's choice;
+        // a hotkey that fails to register is rolled back BEFORE saving so the config
+        // file never keeps a value we know is unusable (would fail again on next launch).
+        //
+        // From here on, ONLY effectiveCfg is used. Mixing newCfg and effectiveCfg in the
+        // same block is a maintenance trap: they differ in exactly one field, so every
+        // read has to be re-checked to know whether the user's choice or the rolled-back
+        // value is in play.
+        var effectiveCfg = newCfg;
+
+        // E1: Hotkey change — try new key first, rollback on failure (before persisting).
+        // The only thing read off newCfg from here on is the key the user ASKED for;
+        // every other field is read off effectiveCfg.
+        if (!Equals(newCfg.Hotkey, oldCfg.Hotkey))
+        {
+            var attemptedHotkey = newCfg.Hotkey;
+
+            // Register internally resolves the key first, then unregisters the old key
+            var registered = _hotkeySvc.Register(attemptedHotkey);
+            effectiveCfg = ConfigResolver.ResolveEffectiveConfig(oldCfg, newCfg, registered);
+
+            if (registered)
             {
-                var attemptedHotkey = newCfg.Hotkey;
+                LogService.Info($"Hotkey changed to {effectiveCfg.Hotkey.Modifiers}+{effectiveCfg.Hotkey.Key}");
+            }
+            else
+            {
+                // Two very different failures share one false result: the key itself is
+                // unusable (vk == 0) or the combination is already taken. They need
+                // different advice, so distinguish them before picking the message.
+                var keyIsInvalid = HotkeyService.KeyStringToVk(attemptedHotkey.Key) == 0;
 
-                // Register internally resolves the key first, then unregisters the old key
-                var registered = _hotkeySvc.Register(attemptedHotkey);
-                effectiveCfg = ConfigResolver.ResolveEffectiveConfig(oldCfg, newCfg, registered);
+                // New key unavailable — try to bring the old key back. This can fail too
+                // (something else may have grabbed it in the meantime), in which case NO
+                // hotkey is live. Say so loudly instead of claiming we "reverted".
+                var rolledBack = _hotkeySvc.Register(oldCfg.Hotkey);
+                var newKeyText = $"{attemptedHotkey.Modifiers}+{attemptedHotkey.Key}";
+                var oldKeyText = $"{oldCfg.Hotkey.Modifiers}+{oldCfg.Hotkey.Key}";
 
-                if (registered)
+                if (rolledBack)
                 {
-                    LogService.Info($"Hotkey changed to {effectiveCfg.Hotkey.Modifiers}+{effectiveCfg.Hotkey.Key}");
+                    var titleKey = keyIsInvalid
+                        ? "bubble.hotkey_change_invalid_title"
+                        : "bubble.hotkey_change_failed_title";
+                    var textKey = keyIsInvalid
+                        ? "bubble.hotkey_change_invalid"
+                        : "bubble.hotkey_change_failed";
+
+                    ShowBubble(LocalizationService.Get(titleKey),
+                               LocalizationService.Get(textKey,
+                                   attemptedHotkey.Modifiers, attemptedHotkey.Key),
+                               ToolTipIcon.Warning);
+                    LogService.Warn($"Hotkey change to {newKeyText} failed ({(keyIsInvalid ? "invalid key" : "already in use")}), reverted to {oldKeyText}");
                 }
                 else
                 {
-                    // Two very different failures share one false result: the key itself is
-                    // unusable (vk == 0) or the combination is already taken. They need
-                    // different advice, so distinguish them before picking the message.
-                    var keyIsInvalid = HotkeyService.KeyStringToVk(attemptedHotkey.Key) == 0;
-
-                    // New key unavailable — try to bring the old key back. This can fail too
-                    // (something else may have grabbed it in the meantime), in which case NO
-                    // hotkey is live. Say so loudly instead of claiming we "reverted".
-                    var rolledBack = _hotkeySvc.Register(oldCfg.Hotkey);
-                    var newKeyText = $"{attemptedHotkey.Modifiers}+{attemptedHotkey.Key}";
-                    var oldKeyText = $"{oldCfg.Hotkey.Modifiers}+{oldCfg.Hotkey.Key}";
-
-                    if (rolledBack)
-                    {
-                        var titleKey = keyIsInvalid
-                            ? "bubble.hotkey_change_invalid_title"
-                            : "bubble.hotkey_change_failed_title";
-                        var textKey = keyIsInvalid
-                            ? "bubble.hotkey_change_invalid"
-                            : "bubble.hotkey_change_failed";
-
-                        ShowBubble(LocalizationService.Get(titleKey),
-                                   LocalizationService.Get(textKey,
-                                       attemptedHotkey.Modifiers, attemptedHotkey.Key),
-                                   ToolTipIcon.Warning);
-                        LogService.Warn($"Hotkey change to {newKeyText} failed ({(keyIsInvalid ? "invalid key" : "already in use")}), reverted to {oldKeyText}");
-                    }
-                    else
-                    {
-                        ShowBubble(LocalizationService.Get("bubble.hotkey_rollback_failed_title"),
-                                   LocalizationService.Get("bubble.hotkey_rollback_failed",
-                                       attemptedHotkey.Modifiers, attemptedHotkey.Key,
-                                       oldCfg.Hotkey.Modifiers, oldCfg.Hotkey.Key),
-                                   ToolTipIcon.Error);
-                        LogService.Error($"Hotkey change to {newKeyText} failed and rollback to {oldKeyText} also failed; no hotkey is registered");
-                    }
+                    ShowBubble(LocalizationService.Get("bubble.hotkey_rollback_failed_title"),
+                               LocalizationService.Get("bubble.hotkey_rollback_failed",
+                                   attemptedHotkey.Modifiers, attemptedHotkey.Key,
+                                   oldCfg.Hotkey.Modifiers, oldCfg.Hotkey.Key),
+                               ToolTipIcon.Error);
+                    LogService.Error($"Hotkey change to {newKeyText} failed and rollback to {oldKeyText} also failed; no hotkey is registered");
                 }
             }
-
-            // v1.0.7 (M3): SettingsForm is modal but still pumps messages, so a mode switch
-            // can complete while the dialog is open. form.Result was built from the config
-            // as it was when the dialog was shown, so it still carries the stale
-            // CurrentMode; writing it back would undo the switch that just happened (and
-            // was already persisted). Re-apply the live mode instead.
-            if (_modeSvc.CurrentMode != effectiveCfg.CurrentMode)
-            {
-                effectiveCfg = effectiveCfg with { CurrentMode = _modeSvc.CurrentMode };
-            }
-
-            if (!_configSvc.Save(effectiveCfg))
-            {
-                // v1.0.7: everything else in this method is about to be applied in memory,
-                // so the settings are live but not durable. Tell the user.
-                ShowBubble(LocalizationService.Get("bubble.save_failed_title"),
-                           LocalizationService.Get("bubble.save_failed"),
-                           ToolTipIcon.Warning);
-            }
-            _config = effectiveCfg;
-
-            if (effectiveCfg.AutoStart != oldCfg.AutoStart)
-            {
-                if (effectiveCfg.AutoStart) _autoStartSvc.Enable();
-                else _autoStartSvc.Disable();
-            }
-
-            _modeSvc.UpdateConfig(effectiveCfg);
-
-            // C7: Only re-apply if the current mode's timeout values actually changed
-            bool currentModeValuesChanged = _modeSvc.CurrentMode switch
-            {
-                AppMode.Work => !Equals(effectiveCfg.Work, oldCfg.Work),
-                AppMode.Away => !Equals(effectiveCfg.Away, oldCfg.Away),
-                _ => false // Unknown — no reapply needed
-            };
-
-            if (currentModeValuesChanged)
-            {
-                // v1.0.6: powercfg must never run on the UI thread here. Worst case it is
-                // 3 steps x MaxAttempts x (timeout + kill grace) — over 100 seconds — which
-                // used to freeze the whole tray app while the settings dialog closed.
-                // Fire-and-forget is fine: failures surface as a balloon, not a return value.
-                _ = ApplyCurrentModeTimeoutsAsync();
-            }
-
-            // Language change: update runtime language, rebuild menu, notify user
-            if (effectiveCfg.Language != oldCfg.Language)
-            {
-                LocalizationService.CurrentLanguage = effectiveCfg.Language;
-                BuildContextMenu();
-                UpdateSwitchMenuItem();
-                var langName = LocalizationService.GetLanguageDisplayName(effectiveCfg.Language);
-                ShowBubble(LocalizationService.Get("bubble.language_changed_title"),
-                           LocalizationService.Get("bubble.language_changed", langName),
-                           ToolTipIcon.Info);
-            }
-
-            _notify.Text = TooltipFor(_modeSvc.CurrentMode);
         }
+
+        // v1.0.7 (M3): a mode switch can complete while a modal dialog is open. The
+        // incoming config may carry the stale CurrentMode; re-apply the live mode.
+        if (_modeSvc.CurrentMode != effectiveCfg.CurrentMode)
+        {
+            effectiveCfg = effectiveCfg with { CurrentMode = _modeSvc.CurrentMode };
+        }
+
+        var saved = _configSvc.Save(effectiveCfg);
+        if (!saved)
+        {
+            // v1.0.7: everything else in this method is about to be applied in memory,
+            // so the settings are live but not durable. Tell the user.
+            ShowBubble(LocalizationService.Get("bubble.save_failed_title"),
+                       LocalizationService.Get("bubble.save_failed"),
+                       ToolTipIcon.Warning);
+        }
+        _config = effectiveCfg;
+
+        if (effectiveCfg.AutoStart != oldCfg.AutoStart)
+        {
+            if (effectiveCfg.AutoStart) _autoStartSvc.Enable();
+            else _autoStartSvc.Disable();
+        }
+
+        _modeSvc.UpdateConfig(effectiveCfg);
+
+        // C7: Only re-apply if the current mode's timeout values actually changed
+        bool currentModeValuesChanged = _modeSvc.CurrentMode switch
+        {
+            AppMode.Work => !Equals(effectiveCfg.Work, oldCfg.Work),
+            AppMode.Away => !Equals(effectiveCfg.Away, oldCfg.Away),
+            _ => false // Unknown — no reapply needed
+        };
+
+        if (currentModeValuesChanged)
+        {
+            // v1.0.6: powercfg must never run on the UI thread here. Fire-and-forget is
+            // fine: failures surface as a balloon, not a return value.
+            _ = ApplyCurrentModeTimeoutsAsync();
+        }
+
+        // Language change: update runtime language, rebuild menu, notify user
+        if (effectiveCfg.Language != oldCfg.Language)
+        {
+            LocalizationService.CurrentLanguage = effectiveCfg.Language;
+            BuildContextMenu();
+            UpdateSwitchMenuItem();
+            var langName = LocalizationService.GetLanguageDisplayName(effectiveCfg.Language);
+            ShowBubble(LocalizationService.Get("bubble.language_changed_title"),
+                       LocalizationService.Get("bubble.language_changed", langName),
+                       ToolTipIcon.Info);
+        }
+
+        _notify.Text = TooltipFor(_modeSvc.CurrentMode);
+        return saved;
     }
 
     /// <summary>
