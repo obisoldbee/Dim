@@ -1,5 +1,9 @@
 using System.Diagnostics;
 using System.Reflection;
+using OBDim.Monitoring.Infrastructure;
+using OBDim.Monitoring.Models;
+using OBDim.Monitoring.Providers;
+using OBDim.Monitoring.Services;
 using OBDim.Models;
 using OBDim.Services;
 
@@ -89,6 +93,16 @@ public class TrayApp : ApplicationContext
     private volatile bool _userToggled;
 
     /// <summary>
+    /// Monitoring (quota & memory) coordinator: starts with the app so reminders and memory
+    /// sampling run even while no panel is open, and stops only on app exit (spec §4.1:
+    /// closing the panel must not stop the scheduler).
+    /// </summary>
+    private MonitoringCoordinator? _monitorCoordinator;
+
+    /// <summary>Single panel instance (spec R02): null until first opened, reused afterwards.</summary>
+    private MonitorForm? _monitorForm;
+
+    /// <summary>
     /// Creates the tray application.
     /// </summary>
     /// <param name="configSvc">Config persistence service.</param>
@@ -170,6 +184,8 @@ public class TrayApp : ApplicationContext
         // Ensure autostart path is current (F1): update registry if EXE was moved
         _autoStartSvc.EnsurePathSync();
 
+        StartMonitoring();
+
         // Hook ApplicationExit for cleanup on all exit paths (C2)
         Application.ApplicationExit += (_, _) => Dispose();
 
@@ -248,11 +264,84 @@ public class TrayApp : ApplicationContext
         {
             Name = "switchItem"
         };
+        var monitorItem = new ToolStripMenuItem(LocalizationService.Get("menu.monitor"), null, (_, _) => OpenMonitorPanel())
+        {
+            Name = "monitorItem"
+        };
         var settingsItem = new ToolStripMenuItem(LocalizationService.Get("menu.settings"), null, (_, _) => OpenSettings());
         var exitItem = new ToolStripMenuItem(LocalizationService.Get("menu.exit"), null, (_, _) => ExitApp());
 
-        menu.Items.AddRange(new ToolStripItem[] { _switchItem, settingsItem, new ToolStripSeparator(), exitItem });
+        menu.Items.AddRange(new ToolStripItem[] { _switchItem, monitorItem, settingsItem, new ToolStripSeparator(), exitItem });
         _notify.ContextMenuStrip = menu;
+    }
+
+    /// <summary>
+    /// Starts the monitoring coordinator exactly once per app run. It lives in the tray app,
+    /// not the panel: reminders and memory sampling continue while the panel is closed
+    /// (spec R11, §4.1). A coordinator failure must not break the tray — log and go on.
+    /// </summary>
+    private void StartMonitoring()
+    {
+        try
+        {
+            var clock = SystemClock.Instance;
+            var runner = new CliProcessRunner();
+            var adapters = new Dictionary<ProviderId, IProviderAdapter>
+            {
+                [ProviderId.Codex] = new CodexProvider(clock, runner),
+                [ProviderId.MiniMax] = new MiniMaxProvider(clock, runner),
+                [ProviderId.Ark] = new ArkProvider(clock, runner),
+            };
+            _monitorCoordinator = new MonitoringCoordinator(
+                clock,
+                new WindowsMemoryReader(),
+                adapters,
+                MonitoringSettingsService.CreateDefault(),
+                new MonitoringCacheService());
+            _monitorCoordinator.ReminderFired += OnQuotaReminder;
+            _monitorCoordinator.Start();
+            LogService.Info("Monitoring coordinator started");
+        }
+        catch (Exception ex)
+        {
+            LogService.Error("Monitoring coordinator failed to start (tray continues without it)", ex);
+            _monitorCoordinator = null;
+        }
+    }
+
+    private void OnQuotaReminder(QuotaReminderEvent evt)
+    {
+        var providerName = LocalizationService.Get($"monitor.provider.{evt.Provider.ToString().ToLowerInvariant()}");
+        var windowName = MonitorForm.LocalizeWindowKey(evt.WindowKey, null);
+        var resetText = evt.ResetsAtUtc is { } reset ? MonitorForm.FormatTime(reset) : LocalizationService.Get("monitor.reset_unknown");
+        ShowBubbleAsync(
+            LocalizationService.Get("monitor.bubble.reminder_title"),
+            LocalizationService.Get("monitor.bubble.reminder",
+                providerName, windowName, MonitorForm.FormatPercent(evt.RemainingPercent), resetText),
+            ToolTipIcon.Warning);
+    }
+
+    /// <summary>
+    /// Opens the usage &amp; memory panel (or activates the existing one). Never toggles the
+    /// Work/Away mode — this runs from the context menu only.
+    /// </summary>
+    private void OpenMonitorPanel()
+    {
+        if (_monitorCoordinator is null)
+        {
+            ShowBubble(LocalizationService.Get("monitor.bubble.unavailable_title"),
+                       LocalizationService.Get("monitor.bubble.unavailable"),
+                       ToolTipIcon.Warning);
+            return;
+        }
+
+        if (_monitorForm is null || _monitorForm.IsDisposed)
+        {
+            _monitorForm = new MonitorForm(_monitorCoordinator);
+        }
+        _monitorForm.PlaceNearCursor();
+        _monitorForm.Show();
+        _monitorForm.Activate();
     }
 
     /// <summary>
@@ -834,6 +923,8 @@ public class TrayApp : ApplicationContext
             try { _iconApp.Dispose(); } catch { /* best effort */ }
             try { _msgWindow.DestroyHandle(); } catch { /* best effort */ }
             try { _syncRoot.Dispose(); } catch { /* best effort */ }
+            try { _monitorForm?.Dispose(); } catch { /* best effort */ }
+            try { _monitorCoordinator?.Dispose(); } catch { /* best effort */ }
         }
 
         base.Dispose(disposing);
