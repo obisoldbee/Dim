@@ -263,7 +263,14 @@ public sealed class MonitoringCoordinator : IDisposable
             }
 
             var now = _clock.UtcNow;
-            if (_identityKeys[id] != snapshot.IdentityKey)
+
+            // Only a VERIFIED identity can trigger the account-context switch. Failure
+            // snapshots carry no verified identity (we may not even know who we asked), so
+            // they never drop the last good snapshot — a timeout must not blank the panel
+            // (A04); it just records the attempt. Unverified SUCCESS replaces the display
+            // snapshot in-session but never loads cross-session cache (§8(4)).
+            var identityChanged = snapshot.IdentityVerified && _identityKeys[id] != snapshot.IdentityKey;
+            if (identityChanged)
             {
                 _identityKeys[id] = snapshot.IdentityKey;
                 _identityGenerations[id]++;
@@ -271,7 +278,7 @@ public sealed class MonitoringCoordinator : IDisposable
                 // not survive. Verified identities may load their matching cache; unverified
                 // ones (MiniMax) never reuse cross-session state (spec §8(4)).
                 _reminderMarks[id] = LoadMarks(id, snapshot.IdentityKey);
-                if (!snapshot.HasError && snapshot.IdentityVerified)
+                if (!snapshot.HasError)
                 {
                     var cached = _cache.Load(id, snapshot.IdentityKey);
                     if (cached?.LastGood is not null)
@@ -280,10 +287,6 @@ public sealed class MonitoringCoordinator : IDisposable
                         // success time — the UI marks them stale until the next success.
                         _lastGoodSnapshots[id] = cached.LastGood;
                     }
-                }
-                else if (!snapshot.IdentityVerified)
-                {
-                    _lastGoodSnapshots[id] = null;
                 }
             }
 

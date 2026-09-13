@@ -1,0 +1,30 @@
+{
+  "viewer": {
+    "auth_method": "sso",
+    "user_id": "1000000000",
+    "user_name": "fixture-user",
+    "account_id": "1000000000",
+    "profile": "agent-plan_cn-beijing_personal",
+    "tenant": "volc",
+    "region": "cn-beijing"
+  },
+  "items": [
+    {
+      "product": "agent-plan",
+      "edition": "personal",
+      "tier": "medium",
+      "subscribed": true,
+      "periods": [
+        { "label": "5h", "used": 250, "total": 1000, "percent": 25, "reset_at": "2026-09-13T18:40:00+08:00" },
+        { "label": "weekly", "used": 5200, "total": 10000, "percent": 52, "reset_at": "2026-09-15T00:00:00+08:00" }
+      ]
+    },
+    {
+      "product": "coding-plan",
+      "edition": "personal",
+      "subscribed": true,
+      "error": "rate limit query failed: backend timeout",
+      "periods": []
+    }
+  ]
+}

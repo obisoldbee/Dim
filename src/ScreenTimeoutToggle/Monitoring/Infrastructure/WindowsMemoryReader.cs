@@ -28,24 +28,53 @@ public sealed class WindowsMemoryReader : IMemoryReader, IDisposable
     {
         error = null;
 
-        if (!Native.GlobalMemoryStatusEx(out var memEx))
+        // dwLength must be set BEFORE the call — with `out` marshaling it would arrive as
+        // zero and GlobalMemoryStatusEx fails with ERROR_INVALID_PARAMETER (win32:87).
+        var memEx = new Native.MEMORYSTATUSEX
+        {
+            dwLength = (uint)Marshal.SizeOf<Native.MEMORYSTATUSEX>(),
+        };
+        if (!Native.GlobalMemoryStatusEx(ref memEx))
         {
             error = $"GlobalMemoryStatusEx failed (win32:{Marshal.GetLastWin32Error()})";
             return null;
         }
 
-        var perf = new Native.PERFORMANCE_INFORMATION();
-        perf.cb = (uint)Marshal.SizeOf<Native.PERFORMANCE_INFORMATION>();
-        if (!Native.GetPerformanceInfo(ref perf, perf.cb))
+        // GetPerformanceInfo's struct changed with Windows 11 (PageSize became SIZE_T and
+        // a Reserved DWORD appeared; verified empirically on 10.0.26200 where the OS
+        // accepts cb=104 and rejects 96 with ERROR_BAD_LENGTH). Try the new layout first,
+        // fall back to the legacy one so Windows 10 keeps working.
+        ulong commitTotalPages, commitLimitPages, pageSize;
+        var v2 = new Native.PERFORMANCE_INFORMATION_V2
         {
-            error = $"GetPerformanceInfo failed (win32:{Marshal.GetLastWin32Error()})";
-            return null;
+            cb = (uint)Marshal.SizeOf<Native.PERFORMANCE_INFORMATION_V2>(),
+        };
+        if (Native.GetPerformanceInfo(ref v2, v2.cb))
+        {
+            commitTotalPages = (ulong)v2.CommitTotal;
+            commitLimitPages = (ulong)v2.CommitLimit;
+            pageSize = (ulong)v2.PageSize;
+        }
+        else
+        {
+            var v1 = new Native.PERFORMANCE_INFORMATION_V1
+            {
+                cb = (uint)Marshal.SizeOf<Native.PERFORMANCE_INFORMATION_V1>(),
+            };
+            if (!Native.GetPerformanceInfo(ref v1, v1.cb))
+            {
+                error = $"GetPerformanceInfo failed (win32:{Marshal.GetLastWin32Error()})";
+                return null;
+            }
+            commitTotalPages = (ulong)v1.CommitTotal;
+            commitLimitPages = (ulong)v1.CommitLimit;
+            pageSize = (ulong)v1.PageSize;
         }
 
-        var pageSize = perf.PageSize == 0 ? 4096u : perf.PageSize;
+        pageSize = pageSize == 0 ? 4096 : pageSize;
         // Commit counters are page counts (SIZE_T); widen to ulong before multiplying.
-        var commitTotal = (ulong)perf.CommitTotal * pageSize;
-        var commitLimit = (ulong)perf.CommitLimit * pageSize;
+        var commitTotal = commitTotalPages * pageSize;
+        var commitLimit = commitLimitPages * pageSize;
 
         var lowMemory = QueryLowMemorySignal();
 
@@ -115,8 +144,12 @@ public sealed class WindowsMemoryReader : IMemoryReader, IDisposable
             public ulong ullAvailExtendedVirtual;
         }
 
+        /// <summary>
+        /// Windows 11 layout (verified empirically on 10.0.26200: OS accepts cb=104).
+        /// PageSize became SIZE_T and a trailing Reserved DWORD was added.
+        /// </summary>
         [StructLayout(LayoutKind.Sequential)]
-        internal struct PERFORMANCE_INFORMATION
+        internal struct PERFORMANCE_INFORMATION_V2
         {
             public uint cb;
             public UIntPtr CommitTotal;
@@ -124,10 +157,31 @@ public sealed class WindowsMemoryReader : IMemoryReader, IDisposable
             public UIntPtr CommitPeak;
             public UIntPtr PhysicalTotal;
             public UIntPtr PhysicalAvailable;
-            public uint SystemCache;
-            public uint KernelTotal;
-            public uint KernelPaged;
-            public uint KernelNonPaged;
+            public UIntPtr SystemCache;
+            public UIntPtr KernelTotal;
+            public UIntPtr KernelPaged;
+            public UIntPtr KernelNonPaged;
+            public UIntPtr PageSize;
+            public uint HandleCount;
+            public uint ProcessCount;
+            public uint ThreadCount;
+            public uint Reserved;
+        }
+
+        /// <summary>Legacy (Windows 10 and earlier) layout: PageSize as the last DWORD, size 96 on x64.</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct PERFORMANCE_INFORMATION_V1
+        {
+            public uint cb;
+            public UIntPtr CommitTotal;
+            public UIntPtr CommitLimit;
+            public UIntPtr CommitPeak;
+            public UIntPtr PhysicalTotal;
+            public UIntPtr PhysicalAvailable;
+            public UIntPtr SystemCache;
+            public UIntPtr KernelTotal;
+            public UIntPtr KernelPaged;
+            public UIntPtr KernelNonPaged;
             public uint HandleCount;
             public uint ProcessCount;
             public uint ThreadCount;
@@ -135,10 +189,13 @@ public sealed class WindowsMemoryReader : IMemoryReader, IDisposable
         }
 
         [DllImport("kernel32.dll", SetLastError = true)]
-        internal static extern bool GlobalMemoryStatusEx(out MEMORYSTATUSEX lpBuffer);
+        internal static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
 
         [DllImport("psapi.dll", SetLastError = true)]
-        internal static extern bool GetPerformanceInfo(ref PERFORMANCE_INFORMATION lpPerformanceInformation, uint cb);
+        internal static extern bool GetPerformanceInfo(ref PERFORMANCE_INFORMATION_V2 lpPerformanceInformation, uint cb);
+
+        [DllImport("psapi.dll", SetLastError = true)]
+        internal static extern bool GetPerformanceInfo(ref PERFORMANCE_INFORMATION_V1 lpPerformanceInformation, uint cb);
 
         [DllImport("kernel32.dll", SetLastError = true)]
         internal static extern IntPtr CreateMemoryResourceNotification(int notificationType);

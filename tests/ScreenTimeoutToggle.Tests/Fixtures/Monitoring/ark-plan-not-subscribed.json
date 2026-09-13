@@ -1,0 +1,26 @@
+{
+  "viewer": {
+    "auth_method": "sso",
+    "user_id": "1000000000",
+    "account_id": "1000000000",
+    "profile": "coding-plan_cn-beijing_personal",
+    "region": "cn-beijing"
+  },
+  "items": [
+    {
+      "product": "agent-plan",
+      "edition": "personal",
+      "subscribed": false,
+      "periods": []
+    },
+    {
+      "product": "coding-plan",
+      "edition": "personal",
+      "subscribed": true,
+      "periods": [
+        { "label": "session", "percent": 0 },
+        { "label": "weekly", "percent": 12, "reset_at": "2026-09-14T00:00:00+08:00" }
+      ]
+    }
+  ]
+}

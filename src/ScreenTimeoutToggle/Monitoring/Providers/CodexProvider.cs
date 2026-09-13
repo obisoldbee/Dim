@@ -319,7 +319,10 @@ public static class JsonRpc
             doc.TryGetProperty("params"),
             hasResult ? doc.TryGetProperty("result") : null,
             hasError ? doc.TryGetProperty("error") : null);
-        return true;
+
+        // A frame with no method AND no result/error is not a JSON-RPC frame at all
+        // (e.g. {"id":true}) — reject it so callers do not treat junk as protocol.
+        return method is not null || frame.IsResponse;
     }
 
     public static string EncodeRequest(int id, string method, object? parameters)

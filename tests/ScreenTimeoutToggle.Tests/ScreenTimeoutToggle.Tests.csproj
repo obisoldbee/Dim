@@ -19,4 +19,9 @@
     <ProjectReference Include="..\..\src\ScreenTimeoutToggle\ScreenTimeoutToggle.csproj" />
   </ItemGroup>
 
+  <!-- Desensitized CLI response fixtures (no real emails, ids, or credentials). -->
+  <ItemGroup>
+    <None Include="Fixtures\Monitoring\*.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

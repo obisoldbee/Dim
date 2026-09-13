@@ -277,21 +277,43 @@ internal sealed class ManagedProcess : IDisposable
     private static async Task PumpAsync(StreamReader reader, Action<string> sink, CancellationToken ct)
     {
         var buffer = new char[4096];
-        while (!ct.IsCancellationRequested)
+        try
         {
-            var read = await reader.ReadAsync(buffer.AsMemory(), ct).ConfigureAwait(false);
-            if (read == 0) break;
-            sink(new string(buffer, 0, read));
+            while (!ct.IsCancellationRequested)
+            {
+                var read = await reader.ReadAsync(buffer.AsMemory(), ct).ConfigureAwait(false);
+                if (read == 0) break;
+                sink(new string(buffer, 0, read));
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancellation is a normal pump exit; the wait layer reports it.
+        }
+        catch (IOException)
+        {
+            // The process died mid-read; whatever we captured is what the caller gets.
         }
     }
 
     private static async Task PumpLinesAsync(StreamReader reader, Func<string, Task> onLine, CancellationToken ct)
     {
-        while (!ct.IsCancellationRequested)
+        try
         {
-            var line = await reader.ReadLineAsync(ct).ConfigureAwait(false);
-            if (line is null) break;
-            await onLine(line).ConfigureAwait(false);
+            while (!ct.IsCancellationRequested)
+            {
+                var line = await reader.ReadLineAsync(ct).ConfigureAwait(false);
+                if (line is null) break;
+                await onLine(line).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Normal pump exit on cancellation.
+        }
+        catch (IOException)
+        {
+            // Stdout broke before EOF (process killed / pipe closed).
         }
     }
 
@@ -307,12 +329,15 @@ internal sealed class ManagedProcess : IDisposable
             var finished = await Task.WhenAny(exited, Task.Delay(total, ct)).ConfigureAwait(false);
             if (finished == exited && exited.IsCompletedSuccessfully)
             {
-                return new ManagedExit(_process.ExitCode, TimedOut: false, Cancelled: false);
+                return new ManagedExit(_process.ExitCode, TimedOut: false, Cancelled: ct.IsCancellationRequested);
             }
 
+            // Cancellation during the wait must be reported as Cancelled, not Timeout —
+            // the two states drive different provider messages.
+            var cancelled = ct.IsCancellationRequested;
             KillJob();
             var reaped = await WaitReapAsync(effectiveGrace).ConfigureAwait(false);
-            return new ManagedExit(reaped ? _process.ExitCode : null, TimedOut: true, Cancelled: false);
+            return new ManagedExit(reaped ? _process.ExitCode : null, TimedOut: !cancelled, Cancelled: cancelled);
         }
         catch (OperationCanceledException)
         {

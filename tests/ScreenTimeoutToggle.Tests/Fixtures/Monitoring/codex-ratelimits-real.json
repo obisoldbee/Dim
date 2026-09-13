@@ -1,0 +1,70 @@
+{
+  "ordinaryUsageAllowed": true,
+  "rateLimits": {
+    "limitId": "codex",
+    "limitName": null,
+    "normalModelSlug": null,
+    "primary": {
+      "usedPercent": 16,
+      "windowDurationMins": 10080,
+      "resetsAt": 1789805426
+    },
+    "secondary": null,
+    "credits": { "hasCredits": false, "unlimited": false, "balance": "0" },
+    "individualLimit": null,
+    "spendControlReached": false,
+    "planType": "pro",
+    "rateLimitReachedType": null
+  },
+  "rateLimitsByLimitId": {
+    "codex_bengalfox": {
+      "limitId": "codex_bengalfox",
+      "limitName": "GPT-5.3-Codex-Spark",
+      "normalModelSlug": null,
+      "primary": { "usedPercent": 0, "windowDurationMins": 300, "resetsAt": 1789253840 },
+      "secondary": { "usedPercent": 0, "windowDurationMins": 10080, "resetsAt": 1789840640 },
+      "credits": null,
+      "individualLimit": null,
+      "spendControlReached": null,
+      "planType": "pro",
+      "rateLimitReachedType": null
+    },
+    "codex": {
+      "limitId": "codex",
+      "limitName": null,
+      "normalModelSlug": null,
+      "primary": { "usedPercent": 16, "windowDurationMins": 10080, "resetsAt": 1789805426 },
+      "secondary": null,
+      "credits": { "hasCredits": false, "unlimited": false, "balance": "0" },
+      "individualLimit": null,
+      "spendControlReached": false,
+      "planType": "pro",
+      "rateLimitReachedType": null
+    }
+  },
+  "rateLimitResetCredits": {
+    "availableCount": 3,
+    "credits": [
+      {
+        "id": "RateLimitResetCredit_fixture0000000000000000000000001",
+        "resetType": "codexRateLimits",
+        "status": "available",
+        "grantedAt": 1787357853,
+        "expiresAt": 1789949853,
+        "title": "Full reset",
+        "description": "Fixture description text."
+      },
+      {
+        "id": "RateLimitResetCredit_fixture0000000000000000000000002",
+        "resetType": "codexRateLimits",
+        "status": "available",
+        "grantedAt": 1788499954,
+        "expiresAt": 1791091954,
+        "title": "Full reset",
+        "description": "Fixture description text."
+      }
+    ]
+  },
+  "accountId": "00000000-0000-4000-8000-000000000001",
+  "rateLimitUpsell": null
+}
