@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using OBDim.Monitoring.Infrastructure;
 using OBDim.Monitoring.Models;
 
 namespace OBDim.Monitoring.Providers;
@@ -56,6 +57,30 @@ public static class SnapshotFactory
             ErrorMessage = detail,
             Buckets = [],
         };
+
+    /// <summary>
+    /// Classifies a failed <see cref="CliLocator"/> lookup. Two genuinely different
+    /// problems hide behind "not found": the CLI was never installed (or the configured
+    /// path is gone), versus an entry that EXISTS but whose launch form we refuse to guess
+    /// (.ps1, a bare POSIX shim, an unparsable/too-large npm shim). The second group is
+    /// <see cref="ProviderErrorKind.UnsupportedEntry"/>, and it is only reachable through
+    /// here — the providers used to collapse every locate error into CliNotFound, which
+    /// left that classification dead code and gave the user the wrong instructions (A07).
+    /// </summary>
+    public static ProviderSnapshot LocateFailure(
+        ProviderId provider, CliLocation location, DateTimeOffset attemptedAt)
+    {
+        var (kind, message) = location.Error switch
+        {
+            "cli.locate_configured_missing" =>
+                (ProviderErrorKind.CliNotFound, "monitor.error.configured_path_missing"),
+            "cli.locate_unsupported_entry" or "cli.locate_shim_unparsable"
+                or "cli.locate_shim_too_large" or "cli.locate_shim_unreadable" =>
+                (ProviderErrorKind.UnsupportedEntry, "monitor.error.unsupported_entry"),
+            _ => (ProviderErrorKind.CliNotFound, "monitor.error.cli_not_installed"),
+        };
+        return Failure(provider, kind, message, attemptedAt);
+    }
 }
 
 /// <summary>JsonElement helpers shared by the parsers. All parsing is tolerant: schema drift must yield ParseFailed, not exceptions.</summary>

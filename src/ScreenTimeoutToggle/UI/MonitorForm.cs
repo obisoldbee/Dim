@@ -255,6 +255,15 @@ public sealed class MonitorForm : Form
         TopMost = true;
         Show();
         Activate();
+
+        // Data may have arrived while the popover had no handle; without this the panel
+        // would show whatever the constructor rendered (possibly minutes old).
+        if (_staleWhileHidden)
+        {
+            _staleWhileHidden = false;
+            UpdateQuotaView();
+            UpdateMemoryView();
+        }
     }
 
     private Point ComputeAnchorFromIcon(Rect iconRect)
@@ -509,24 +518,57 @@ public sealed class MonitorForm : Form
         }
     }
 
-    /// <summary>
     /// Coalesces coordinator events: several may fire within one UI cycle (three
     /// providers finishing together), and each one previously triggered a FULL rebuild of
     /// every card — the direct cause of the multi-second stalls on click/tab switches.
+    /// <para>
+    /// Two failure modes this flag must NOT have (both are what a naive bool would give):
+    /// events arrive on coordinator threads, so the flag is set with <see cref="Interlocked"/>;
+    /// and every exit path — including a disposed form or a <c>BeginInvoke</c> that throws
+    /// because the handle died — resets it. A flag left stuck at "pending" silently
+    /// disables ALL future refreshes.
+    /// </para>
     /// </summary>
-    private bool _pendingUiRefresh;
+    private int _pendingUiRefresh;
+
+    /// <summary>Data changed while the popover had no window handle; forces one repaint on next open.</summary>
+    private bool _staleWhileHidden;
 
     private void OnCoordinatorChanged()
     {
-        if (IsDisposed || !IsHandleCreated || _pendingUiRefresh) return;
-        _pendingUiRefresh = true;
-        BeginInvoke(() =>
+        if (IsDisposed) return;
+        if (Interlocked.Exchange(ref _pendingUiRefresh, 1) == 1) return;
+
+        if (!IsHandleCreated)
         {
-            if (IsDisposed) return;
-            _pendingUiRefresh = false;
-            UpdateQuotaView();
-            if (_currentView == View.Memory) UpdateMemoryView();
-        });
+            // Nothing is on screen to paint, but the data DID move — remember it so the
+            // next open does not show whatever the constructor rendered.
+            _staleWhileHidden = true;
+            Interlocked.Exchange(ref _pendingUiRefresh, 0);
+            return;
+        }
+
+        try
+        {
+            BeginInvoke(() =>
+            {
+                try
+                {
+                    if (IsDisposed) return;
+                    UpdateQuotaView();
+                    if (_currentView == View.Memory) UpdateMemoryView();
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _pendingUiRefresh, 0);
+                }
+            });
+        }
+        catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException)
+        {
+            // The handle died between the check and the post; never leave the gate closed.
+            Interlocked.Exchange(ref _pendingUiRefresh, 0);
+        }
     }
 
     private void OnReminderFired(QuotaReminderEvent evt)

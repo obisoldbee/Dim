@@ -293,6 +293,28 @@ public sealed class MonitoringCoordinator : IDisposable
                 }
             }
 
+            // A CREDENTIAL-level failure is not a transient outage: the account whose
+            // quota we were showing is gone (signed out / token revoked). Failure snapshots
+            // carry no verified identity, so `identityChanged` above stays false and the
+            // previous account's numbers would keep being displayed — dimmed, but still
+            // wrong, and still driving reminders. Drop them (A09). Transport-level failures
+            // (timeout / parse / api) deliberately do NOT clear anything (A04).
+            if (snapshot.Error == ProviderErrorKind.NotSignedIn)
+            {
+                if (_lastGoodSnapshots.TryGetValue(id, out var previous) && previous is not null)
+                {
+                    _lastGoodSnapshots[id] = null;
+                    _reminderMarks[id] = [];
+                    _identityKeys[id] = null;
+                    // Deliberately NOT setting persistState: PersistProviderState writes
+                    // `snapshot` as LastGood, and this snapshot is the FAILURE one — saving
+                    // it would poison the cache with an error record. The on-disk cache is
+                    // keyed by identity, so the signed-out account's file simply stops being
+                    // loaded (only verified identities read cache).
+                    LogService.Info($"Monitoring[{id}] identity no longer signed in — previous quota and reminder marks dropped");
+                }
+            }
+
             _lastAttempts[id] = snapshot.HasError ? snapshot : null;
             _refreshStates[id].RecordAttempt(snapshot, now);
 

@@ -37,11 +37,7 @@ public sealed class CodexProvider : IProviderAdapter
         var location = CliLocator.Locate(settings.CliPath, "codex");
         if (!location.Found)
         {
-            return SnapshotFactory.Failure(
-                ProviderId.Codex,
-                location.Error == "cli.locate_configured_missing" ? ProviderErrorKind.CliNotFound : ProviderErrorKind.CliNotFound,
-                location.Error == "cli.locate_configured_missing" ? "monitor.error.configured_path_missing" : "monitor.error.cli_not_installed",
-                attemptedAt);
+            return SnapshotFactory.LocateFailure(ProviderId.Codex, location, attemptedAt);
         }
 
         await EnsureVersionAsync(location, cancellationToken).ConfigureAwait(false);
@@ -143,6 +139,7 @@ public sealed class CodexProvider : IProviderAdapter
         finally
         {
             pumpCts.Cancel();
+            pumpCts.Dispose(); // Cancel() alone leaves the linked registration alive until GC
             process.CloseStdin();
             await process.WaitForExitAfterCloseAsync(request.KillGrace, CancellationToken.None).ConfigureAwait(false);
             try { await pumpTask.ConfigureAwait(false); } catch { /* pump ends with the process */ }

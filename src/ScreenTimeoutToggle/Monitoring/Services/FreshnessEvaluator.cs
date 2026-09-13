@@ -65,7 +65,14 @@ public static class ReminderEvaluator
         ProviderSnapshot snapshot, HashSet<string> marks, DateTimeOffset nowUtc)
     {
         if (!snapshot.IdentityVerified) return [];
-        if (FreshnessEvaluator.IsStale(snapshot, nowUtc)) return [];
+
+        // Two gates, deliberately NOT the snapshot-wide FreshnessEvaluator.IsStale: that
+        // one marks the WHOLE snapshot stale as soon as ANY window's reset point passed.
+        // Codex mixes a 5-hour window with a weekly one, so a 5-hour rollover would
+        // otherwise silence reminders for the weekly window — which is still valid data.
+        // The age gate is snapshot-wide; the reset-point gate belongs to its own window.
+        if (snapshot.SucceededAtUtc is null) return [];
+        if (nowUtc - snapshot.SucceededAtUtc.Value > FreshnessEvaluator.QuotaMaxAge) return [];
 
         var events = new List<QuotaReminderEvent>();
         foreach (var bucket in snapshot.Buckets)
@@ -77,6 +84,9 @@ public static class ReminderEvaluator
                 {
                     continue; // no reset point → panel hint only (spec §7)
                 }
+                // This window's own reset point has passed without a re-check: its number
+                // may already have been refilled. Other windows are unaffected.
+                if (window.ResetsAtUtc is { } resetPoint && resetPoint <= nowUtc) continue;
                 if (window.PercentOutOfRange) continue;
                 if (window.RemainingPercent is null) continue;
 

@@ -28,10 +28,7 @@ public sealed class MiniMaxProvider : IProviderAdapter
         var location = CliLocator.Locate(settings.CliPath, "mmx");
         if (!location.Found)
         {
-            return SnapshotFactory.Failure(
-                ProviderId.MiniMax, ProviderErrorKind.CliNotFound,
-                location.Error == "cli.locate_configured_missing" ? "monitor.error.configured_path_missing" : "monitor.error.cli_not_installed",
-                attemptedAt);
+            return SnapshotFactory.LocateFailure(ProviderId.MiniMax, location, attemptedAt);
         }
         if (location.NodeScriptPath is null && location.ExePath!.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
         {

@@ -30,10 +30,7 @@ public sealed class ArkProvider : IProviderAdapter
         var location = CliLocator.Locate(settings.CliPath, "arkcli");
         if (!location.Found)
         {
-            return SnapshotFactory.Failure(
-                ProviderId.Ark, ProviderErrorKind.CliNotFound,
-                location.Error == "cli.locate_configured_missing" ? "monitor.error.configured_path_missing" : "monitor.error.cli_not_installed",
-                attemptedAt);
+            return SnapshotFactory.LocateFailure(ProviderId.Ark, location, attemptedAt);
         }
         if (location.NodeScriptPath is null && location.ExePath!.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
         {

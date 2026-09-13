@@ -120,8 +120,12 @@ public class CliProcessRunnerTests
         var runner = new CliProcessRunner();
         try
         {
+            // 10 s, not 3 s: the point of this test is that a TIMEOUT kills the whole tree,
+            // and a cold node start under a parallel test run can easily eat 3 s — which
+            // killed node before it ever printed the grandchild PID and turned a passing
+            // test into a flaky one. The script runs for 60 s, so a timeout still happens.
             var result = await runner.RunAsync(
-                new CliRequest { ExePath = nodePath, Arguments = [script], Timeout = TimeSpan.FromSeconds(3) },
+                new CliRequest { ExePath = nodePath, Arguments = [script], Timeout = TimeSpan.FromSeconds(10) },
                 CancellationToken.None);
             Assert.True(result.TimedOut);
 
