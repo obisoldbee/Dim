@@ -293,6 +293,13 @@ public sealed class MonitoringCoordinator : IDisposable
             _lastAttempts[id] = snapshot.HasError ? snapshot : null;
             _refreshStates[id].RecordAttempt(snapshot, now);
 
+            // One sanitized line per refresh outcome — command type, CLI version, elapsed
+            // ms and error CLASSIFICATION only. Raw stderr / account data never reach the
+            // log (spec §8(5)).
+            LogService.Info(snapshot.HasError
+                ? $"Monitoring[{id}] refresh failed after {(int)(now - snapshot.AttemptedAtUtc).TotalMilliseconds}ms: {snapshot.Error} ({snapshot.ErrorMessage ?? "no detail"}) cli={snapshot.CliVersion ?? "?"}"
+                : $"Monitoring[{id}] refresh ok in {(int)(now - snapshot.AttemptedAtUtc).TotalMilliseconds}ms: {snapshot.Buckets.Count} bucket(s), {snapshot.Buckets.Sum(b => b.Windows.Count)} window(s), cli={snapshot.CliVersion ?? "?"}");
+
             if (!snapshot.HasError && snapshot.SucceededAtUtc is not null)
             {
                 _lastGoodSnapshots[id] = snapshot;

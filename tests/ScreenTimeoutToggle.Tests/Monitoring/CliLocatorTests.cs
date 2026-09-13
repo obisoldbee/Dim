@@ -120,6 +120,37 @@ public class NodeShimParserTests
         }
     }
 
+    /// <summary>Newer npm shim style: %dp0% set via CALL :find_dp0 instead of %~dp0.</summary>
+    [Fact]
+    public void PercentDp0Form_IsParsed()
+    {
+        var shim = Path.Combine(Path.GetTempPath(), $"obdim-shim-{Guid.NewGuid():N}.cmd");
+        var script = Path.Combine(Path.GetTempPath(), $"real-script-{Guid.NewGuid():N}.js");
+        File.WriteAllText(script, "// entry\n");
+        var shimDir = Path.GetDirectoryName(shim)!;
+        File.WriteAllText(shim,
+            "@ECHO off\r\n" +
+            "GOTO start\r\n" +
+            ":find_dp0\r\n" +
+            "SET dp0=%~dp0\r\n" +
+            "EXIT /b\r\n" +
+            ":start\r\n" +
+            "SETLOCAL\r\n" +
+            "CALL :find_dp0\r\n" +
+            $"endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\{Path.GetFileName(script)}\" %*\r\n");
+        try
+        {
+            var ok = NodeShimParser.TryParseCmdShim(shim, out var scriptPath, out var error);
+            Assert.True(ok, $"error={error}");
+            Assert.Equal(script, scriptPath);
+        }
+        finally
+        {
+            File.Delete(shim);
+            File.Delete(script);
+        }
+    }
+
     [Fact]
     public void UnparsableShim_ReportsError_NotGuesses()
     {

@@ -210,8 +210,13 @@ public static class NodeShimParser
 
     private static string ExpandShimPath(string token, string shimDir)
     {
+        // Two npm shim generations exist: "%~dp0\..." (classic) and "%dp0%\..." (the
+        // CALL :find_dp0 style this machine ships). Expand both, case-insensitively.
+        // The shimDir substitution plus the token's own separator can double the
+        // backslash — collapse that again (UNC paths never appear in npm shims).
         var expanded = token
             .Replace("%~dp0", shimDir + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+            .Replace("%dp0%", shimDir + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
             .Replace("\\\\", "\\", StringComparison.Ordinal)
             .Replace("\"", "", StringComparison.Ordinal);
         return expanded;
