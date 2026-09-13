@@ -81,7 +81,9 @@ public sealed class CodexProvider : IProviderAdapter
 
             channel.NotifyAsync("initialized");
 
-            var accountResponse = await channel.SendAsync(1, "account/read", null, timeoutCts.Token).ConfigureAwait(false);
+            // account/read takes an empty params OBJECT on 0.154.0 — `null` produced an
+            // error frame in the real-machine trial, while {} worked in the probe.
+            var accountResponse = await channel.SendAsync(1, "account/read", new { }, timeoutCts.Token).ConfigureAwait(false);
             var rateLimitsResponse = await channel.SendAsync(2, "account/rateLimits/read", new { }, timeoutCts.Token).ConfigureAwait(false);
 
             if (accountResponse.Error is not null || rateLimitsResponse.Error is not null)

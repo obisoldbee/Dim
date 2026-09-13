@@ -171,15 +171,17 @@ public static class NodeShimParser
         {
             var line = rawLine.TrimEnd('\r');
             var idx = line.IndexOf(".js", StringComparison.OrdinalIgnoreCase);
-            if (idx < 0) continue;
+            var mjsIdx = line.IndexOf(".mjs", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0 && mjsIdx < 0) continue;
 
-            // Take the last double-quoted segment on the line that ends in .js.
+            // Take the last double-quoted segment on the line that ends in a JS entry
+            // (.js / .mjs / .cjs — mmx ships an .mjs entry).
             var lastQuote = line.LastIndexOf('"');
             var firstQuote = line.LastIndexOf('"', Math.Max(0, lastQuote - 1));
             if (lastQuote > 0 && firstQuote >= 0 && lastQuote > firstQuote)
             {
                 var token = line[(firstQuote + 1)..lastQuote];
-                if (token.EndsWith(".js", StringComparison.OrdinalIgnoreCase))
+                if (IsJsEntry(token))
                 {
                     best = ExpandShimPath(token, shimDir);
                     continue;
@@ -190,7 +192,7 @@ public static class NodeShimParser
             var tokens = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             foreach (var tok in tokens.Reverse())
             {
-                if (tok.EndsWith(".js", StringComparison.OrdinalIgnoreCase) && !tok.StartsWith('%'))
+                if (IsJsEntry(tok) && !tok.StartsWith('%'))
                 {
                     best = ExpandShimPath(tok.Trim('"'), shimDir);
                     break;
@@ -207,6 +209,11 @@ public static class NodeShimParser
         scriptPath = best;
         return true;
     }
+
+    private static bool IsJsEntry(string token) =>
+        token.EndsWith(".js", StringComparison.OrdinalIgnoreCase) ||
+        token.EndsWith(".mjs", StringComparison.OrdinalIgnoreCase) ||
+        token.EndsWith(".cjs", StringComparison.OrdinalIgnoreCase);
 
     private static string ExpandShimPath(string token, string shimDir)
     {
