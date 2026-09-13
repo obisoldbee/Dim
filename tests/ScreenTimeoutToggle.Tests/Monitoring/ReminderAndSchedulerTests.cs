@@ -176,7 +176,11 @@ public class ReminderEvaluatorTests
     public void OutOfRangePercent_NeverFires()
     {
         var marks = new HashSet<string>();
-        var s = Snapshot(remainingPercent: null);
+        // Simulates parser drift: the window is flagged out-of-range AND still carries a
+        // low remaining value. The evaluator must refuse flagged data no matter what the
+        // remaining number claims — this is what makes the PercentOutOfRange guard a real
+        // behavior gate rather than decoration (mutation-verified red in Debug+Release).
+        var s = Snapshot(remainingPercent: 3);
         s = s with
         {
             Buckets =
@@ -185,7 +189,7 @@ public class ReminderEvaluatorTests
                 {
                     Windows =
                     [
-                        new QuotaWindow { SourceKey = "primary", UsedPercent = 140, RemainingPercent = null, PercentOutOfRange = true, ResetsAtUtc = Reset, HasAnyQuotaField = true },
+                        new QuotaWindow { SourceKey = "primary", UsedPercent = 140, RemainingPercent = 3, PercentOutOfRange = true, ResetsAtUtc = Reset, HasAnyQuotaField = true },
                     ],
                 },
             ],
