@@ -501,8 +501,11 @@ public sealed class MonitorForm : Form
     {
         var tabHeight = S(30);
         var y = (_header.Height - tabHeight) / 2;
-        var quotaWidth = TextRenderer.MeasureText(_quotaSegment.Text, _quotaSegment.Font).Width + S(6);
-        var memoryWidth = TextRenderer.MeasureText(_memorySegment.Text, _memorySegment.Font).Width + S(6);
+        // +12: a Button's internal text area is ~8px narrower than its bounds, and GDI
+        // WordBreak wraps CJK text between any two characters — with only +6 the second
+        // character of 额度/内存 silently moved to a clipped second line (single-char tabs).
+        var quotaWidth = TextRenderer.MeasureText(_quotaSegment.Text, _quotaSegment.Font).Width + S(12);
+        var memoryWidth = TextRenderer.MeasureText(_memorySegment.Text, _memorySegment.Font).Width + S(12);
         _quotaSegment.SetBounds(S(19), y, quotaWidth, tabHeight);
         _memorySegment.SetBounds(S(19) + quotaWidth + S(24), y, memoryWidth, tabHeight);
 
