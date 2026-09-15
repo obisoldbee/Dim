@@ -38,4 +38,42 @@ public class TrayClickToggleTests
             $"{button} must NOT toggle — right-click only opens the context menu; " +
             "NotifyIcon.Click fires for every button, which is exactly the bug being guarded against");
     }
+
+    // ---- v1.1.2：托盘左键开关弹窗与 OnDeactivate→Close 的时序竞态守卫 ----
+    // 面板打开时点托盘：失活先关掉面板，MouseClick 随后到达，若不抑制就会"点托盘关不掉"。
+
+    private static readonly DateTimeOffset Base = new(2026, 9, 15, 12, 0, 0, TimeSpan.Zero);
+
+    [Fact]
+    public void SuppressReopen_NullTimestamp_ReturnsFalse()
+    {
+        // 面板从未因失活关闭过（首次打开 / Esc 关闭）——必须照常打开。
+        Assert.False(TrayApp.ShouldSuppressReopenAfterDeactivate(null, Base));
+    }
+
+    [Theory]
+    [InlineData(0)]    // 同一击：失活关闭后立即到达的 MouseClick
+    [InlineData(100)]
+    [InlineData(400)]  // 窗口边界（含）
+    public void SuppressReopen_JustClosedByDeactivation_ReturnsTrue(int msAgo)
+    {
+        Assert.True(TrayApp.ShouldSuppressReopenAfterDeactivate(Base.AddMilliseconds(-msAgo), Base),
+            $"{msAgo}ms 前刚因失活关闭——同一击托盘点击不应把面板重新弹出来");
+    }
+
+    [Theory]
+    [InlineData(401)]  // 窗口外：这是用户的下一次真实交互
+    [InlineData(5000)]
+    public void SuppressReopen_OldDeactivateClose_ReturnsFalse(int msAgo)
+    {
+        Assert.False(TrayApp.ShouldSuppressReopenAfterDeactivate(Base.AddMilliseconds(-msAgo), Base),
+            $"{msAgo}ms 前的失活关闭不该吞掉一次新的打开请求");
+    }
+
+    [Fact]
+    public void SuppressReopen_FutureTimestamp_ClockSkew_ReturnsFalse()
+    {
+        // 时间戳在未来只可能是时钟漂移/乱序——宁可多开一次，也不吞掉真实点击。
+        Assert.False(TrayApp.ShouldSuppressReopenAfterDeactivate(Base.AddSeconds(1), Base));
+    }
 }

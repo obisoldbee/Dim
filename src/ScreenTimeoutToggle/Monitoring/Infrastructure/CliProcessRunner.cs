@@ -82,7 +82,24 @@ public sealed class CliProcessRunner : ICliProcessRunner
         var exit = await process.WaitForExitAsync(request.Timeout, request.KillGrace, cancellationToken)
             .ConfigureAwait(false);
 
-        await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
+        // The parent's outcome is final, but a grandchild that inherited the redirected
+        // stdout/stderr handles keeps the pipes open past this point — the pumps would
+        // wait for EOF forever and the job would never close, single-flighting that
+        // provider until the app restarts. Tear down whatever is left of the tree (a
+        // no-op when the wait already killed the job), then bound the drain instead of
+        // trusting it.
+        process.TerminateJob();
+
+        var drained = Task.WhenAll(stdoutTask, stderrTask);
+        if (!drained.IsCompleted)
+        {
+            var grace = request.KillGrace <= TimeSpan.Zero ? TimeSpan.FromSeconds(5) : request.KillGrace;
+            await Task.WhenAny(drained, Task.Delay(grace)).ConfigureAwait(false);
+        }
+        if (drained.IsCompleted)
+        {
+            await drained.ConfigureAwait(false); // observe pump failures exactly as before
+        }
         var (stdout, stderr, truncated) = output.Snapshot();
 
         return new CliResult
@@ -271,6 +288,10 @@ internal sealed class ManagedProcess : IDisposable
     public Task PumpStderrAsync(OutputCapper sink, CancellationToken ct) =>
         PumpAsync(_stderrReader!, sink.AppendStderr, ct);
 
+    /// <summary>Drains stderr into a caller-supplied sink (used to discard chatty stderr).</summary>
+    public Task PumpStderrAsync(Action<string> sink, CancellationToken ct) =>
+        PumpAsync(_stderrReader!, sink, ct);
+
     public Task PumpStdoutLinesAsync(Func<string, Task> onLine, CancellationToken ct) =>
         PumpLinesAsync(_stdoutReader!, onLine, ct);
 
@@ -395,6 +416,13 @@ internal sealed class ManagedProcess : IDisposable
         writer.Write(line);
         writer.Write('\n');
     }
+
+    /// <summary>
+    /// Terminates every process still inside the job. After a normal parent exit this is
+    /// pure cleanup — the outcome is already recorded, and anything left (a grandchild
+    /// holding the redirected pipes) must not outlive the caller's interest in it.
+    /// </summary>
+    public void TerminateJob() => KillJob();
 
     private void KillJob()
     {

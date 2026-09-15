@@ -180,7 +180,7 @@ public class TrayApp : ApplicationContext
             if (e.Button != MouseButtons.Left) return;
             if (_monitorCoordinator is not null && _monitorCoordinator.Settings.LeftClickOpensPopover)
             {
-                ToggleMonitorPopover();
+                ToggleMonitorPopover(suppressIfJustDeactivated: true);
             }
             else
             {
@@ -416,7 +416,27 @@ public class TrayApp : ApplicationContext
     /// <paramref name="initialView"/> selects the view when the popover has to be created
     /// or is currently closed (used by the 设置… menu item to land on settings).
     /// </summary>
-    private void ToggleMonitorPopover(MonitorForm.View initialView = MonitorForm.View.Quota)
+    /// <summary>
+    /// Decides whether a popover reopen should be suppressed because the panel was just
+    /// dismissed by deactivation. Pure function so the guard can be unit-tested without a
+    /// message loop — same pattern as <see cref="ShouldToggleOnClick"/>.
+    /// </summary>
+    /// <remarks>
+    /// Clicking the tray icon while the popover is open deactivates the panel (shell takes
+    /// focus → <see cref="MonitorForm.OnDeactivate"/> closes it) and THEN delivers the
+    /// tray MouseClick. Without this suppression the toggle saw a disposed form, recreated
+    /// the panel, and the tray toggle looked broken — "点托盘关不掉". The window is
+    /// deliberately short (400 ms) so only the same click is swallowed, never a real
+    /// second interaction.
+    /// </remarks>
+    internal static bool ShouldSuppressReopenAfterDeactivate(DateTimeOffset? deactivatedClosedAtUtc, DateTimeOffset now)
+    {
+            if (deactivatedClosedAtUtc is not { } closedAt) return false;
+            var age = now - closedAt;
+            return age >= TimeSpan.Zero && age <= TimeSpan.FromMilliseconds(400);
+    }
+
+    private void ToggleMonitorPopover(MonitorForm.View initialView = MonitorForm.View.Quota, bool suppressIfJustDeactivated = false)
     {
         if (_monitorCoordinator is null)
         {
@@ -442,6 +462,11 @@ public class TrayApp : ApplicationContext
 
         if (_monitorForm is null || _monitorForm.IsDisposed)
         {
+            if (suppressIfJustDeactivated
+                && ShouldSuppressReopenAfterDeactivate(_monitorForm?.LastDeactivateClosedAtUtc, DateTimeOffset.UtcNow))
+            {
+                return; // the same click already closed it — do not flash it back open
+            }
             _monitorForm = new MonitorForm(_monitorCoordinator,
                 appConfigGetter: () => _config,
                 appConfigApplier: ApplyFullSettings);

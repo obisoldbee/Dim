@@ -63,6 +63,10 @@ public sealed class CodexProvider : IProviderAdapter
         var channel = new RpcChannel(process, request.MaxOutputBytes);
         var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token);
         var pumpTask = process.PumpStdoutLinesAsync(line => channel.OnLineAsync(line), pumpCts.Token);
+        // app-server logs to stderr. If nobody drains it, anything past the pipe buffer
+        // (~4 KB) blocks the child mid-protocol and every refresh times out — pump it to
+        // a discard sink for the whole session (stderr is never shown or logged).
+        var stderrPumpTask = process.PumpStderrAsync(_ => { }, pumpCts.Token);
 
         try
         {
@@ -134,7 +138,13 @@ public sealed class CodexProvider : IProviderAdapter
         }
         catch (IOException)
         {
-            return Fail(ProviderErrorKind.ExecutionFailed, "stdout stream broke before the conversation finished");
+            // The channel marks itself dead when output blows the cap — surface THAT
+            // classification (spec §5.3), the same way Ark and MiniMax report 输出超限,
+            // instead of a generic execution failure.
+            return Fail(channel.OverLimit
+                ? ProviderErrorKind.OutputLimitExceeded
+                : ProviderErrorKind.ExecutionFailed,
+                channel.OverLimit ? null : "stdout stream broke before the conversation finished");
         }
         finally
         {
@@ -143,6 +153,7 @@ public sealed class CodexProvider : IProviderAdapter
             process.CloseStdin();
             await process.WaitForExitAfterCloseAsync(request.KillGrace, CancellationToken.None).ConfigureAwait(false);
             try { await pumpTask.ConfigureAwait(false); } catch { /* pump ends with the process */ }
+            try { await stderrPumpTask.ConfigureAwait(false); } catch { /* pump ends with the process */ }
         }
 
         ProviderSnapshot Fail(ProviderErrorKind kind, string? detail) =>
