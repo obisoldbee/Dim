@@ -245,11 +245,22 @@ public sealed class MonitorForm : Form
         base.OnKeyDown(e);
     }
 
+    /// <summary>
+    /// When the panel was closed because it lost activation (the popover dismissal path).
+    /// A tray click that steals focus closes the panel through this route and then arrives
+    /// as a MouseClick — the toggle needs the timestamp to suppress the immediate reopen.
+    /// </summary>
+    internal DateTimeOffset? LastDeactivateClosedAtUtc { get; private set; }
+
     /// <summary>Popover behaviour: any loss of activation (click outside) dismisses the panel.</summary>
     protected override void OnDeactivate(EventArgs e)
     {
         base.OnDeactivate(e);
-        if (Visible) Close();
+        if (Visible)
+        {
+            LastDeactivateClosedAtUtc = DateTimeOffset.UtcNow;
+            Close();
+        }
     }
 
     /// <summary>

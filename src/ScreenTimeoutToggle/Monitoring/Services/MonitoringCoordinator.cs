@@ -212,8 +212,10 @@ public sealed class MonitoringCoordinator : IDisposable
         {
             await _globalSlots.WaitAsync(_lifetimeCts.Token).ConfigureAwait(false);
         }
-        catch (OperationCanceledException)
+        catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
         {
+            // Normal cancellation — or the app exited while this refresh was still queued
+            // and the semaphore was disposed under it. Neither is a refresh failure.
             lock (_stateLock) _refreshStates[id].InFlight = false;
             return;
         }
@@ -244,7 +246,11 @@ public sealed class MonitoringCoordinator : IDisposable
         }
         finally
         {
-            _globalSlots.Release();
+            // Dispose() can race an in-flight refresh on app exit; releasing a disposed
+            // semaphore must not fault this fire-and-forget task before the state-change
+            // signal below fires.
+            try { _globalSlots.Release(); }
+            catch (ObjectDisposedException) { }
             RaiseQuotaStateChanged();
         }
     }
@@ -327,6 +333,15 @@ public sealed class MonitoringCoordinator : IDisposable
 
             if (!snapshot.HasError && snapshot.SucceededAtUtc is not null)
             {
+                // PRD §5.2(8): a partial result (Ark per-bucket errors) replaces only the
+                // buckets it carries authoritative data for — errored buckets keep the
+                // previous good values and their old reset times, same identity only.
+                if (snapshot.IsPartial
+                    && _lastGoodSnapshots[id] is { } previousGood
+                    && previousGood.IdentityKey == snapshot.IdentityKey)
+                {
+                    snapshot = SnapshotMerger.MergePartial(previousGood, snapshot);
+                }
                 _lastGoodSnapshots[id] = snapshot;
                 if (snapshot.IdentityVerified) persistState = true;
             }

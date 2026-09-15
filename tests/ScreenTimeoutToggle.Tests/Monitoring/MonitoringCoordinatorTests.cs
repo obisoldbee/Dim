@@ -93,6 +93,47 @@ public class MonitoringCoordinatorTests : IDisposable
         ],
     };
 
+    private ProviderSnapshot TwoBucketGood(ProviderId id, string identity, double b1, double b2) => new()
+    {
+        Provider = id,
+        IdentityKey = identity,
+        IdentityVerified = true,
+        AttemptedAtUtc = _clock.UtcNow,
+        SucceededAtUtc = _clock.UtcNow,
+        Buckets = [BucketWithRemaining("b1", b1), BucketWithRemaining("b2", b2)],
+    };
+
+    private ProviderSnapshot PartialWithOneErroredBucket(ProviderId id, string identity, double freshB1, string erroredKey) => new()
+    {
+        Provider = id,
+        IdentityKey = identity,
+        IdentityVerified = true,
+        AttemptedAtUtc = _clock.UtcNow,
+        SucceededAtUtc = _clock.UtcNow,
+        IsPartial = true,
+        Buckets =
+        [
+            BucketWithRemaining("b1", freshB1),
+            new QuotaBucket { SourceKey = erroredKey, DisplayName = erroredKey, Error = "quota query failed", Windows = [] },
+        ],
+    };
+
+    private QuotaBucket BucketWithRemaining(string key, double remaining) => new()
+    {
+        SourceKey = key,
+        Windows =
+        [
+            new QuotaWindow
+            {
+                SourceKey = "primary",
+                UsedPercent = 100 - remaining,
+                RemainingPercent = remaining,
+                ResetsAtUtc = _clock.UtcNow.AddHours(3),
+                HasAnyQuotaField = true,
+            },
+        ],
+    };
+
     private ProviderSnapshot Failure(ProviderId id, ProviderErrorKind kind = ProviderErrorKind.Timeout) => new()
     {
         Provider = id,
@@ -178,6 +219,7 @@ public class MonitoringCoordinatorTests : IDisposable
         coordinator.QuotaStateChanged += () => { };
         coordinator.RequestManualRefresh(ProviderId.Codex);
         await WaitForAsync(() => coordinator.GetDisplayState(ProviderId.Codex).LastGood, TimeSpan.FromSeconds(10), "first good");
+        var succeededAtBeforeFailure = coordinator.GetDisplayState(ProviderId.Codex).LastGood!.SucceededAtUtc;
 
         next = Failure(ProviderId.Codex, ProviderErrorKind.Timeout);
         ClearManualGate();
@@ -188,8 +230,8 @@ public class MonitoringCoordinatorTests : IDisposable
         Assert.NotNull(state.LastGood);                      // 旧快照仍在
         Assert.NotNull(state.LastAttempt);                   // 失败单独可见
         Assert.Equal(ProviderErrorKind.Timeout, state.LastAttempt!.Error);
-        // 旧快照的成功时间未被失败刷新 (spec §5.2(5))
-        Assert.Equal(state.LastGood!.SucceededAtUtc, state.LastGood.SucceededAtUtc);
+        // 旧快照的成功时间未被失败刷新 (spec §5.2(5))。v1.1.2 前这里是与自身比较的恒真断言。
+        Assert.Equal(succeededAtBeforeFailure, state.LastGood!.SucceededAtUtc);
     }
 
     /// <summary>A09/A04: 未核实身份的失败不动旧快照；已验证的身份切换后旧账号数据不得沿用。</summary>
@@ -404,6 +446,74 @@ public class MonitoringCoordinatorTests : IDisposable
         coordinator.ApplySettings(new MonitoringSettings { MemoryEnabled = false });
         Assert.Null(coordinator.LatestMemorySample);
         Assert.Equal(0, coordinator.MemoryHistory.Count);
+    }
+
+    /// <summary>PRD §5.2(8)：部分更新只替换本次有权威数据的桶；失败桶沿用上一个好快照的值与旧时间（同一身份）。</summary>
+    [Fact]
+    public async Task PartialRefresh_KeepsPreviousGoodBucketsForErroredOnes()
+    {
+        ProviderSnapshot next = TwoBucketGood(ProviderId.Ark, "ident-1", b1: 80, b2: 60);
+        var adapter = new FakeAdapter(ProviderId.Ark, () => next);
+        using var coordinator = new MonitoringCoordinator(
+            _clock, new NullMemoryReader(),
+            new Dictionary<ProviderId, IProviderAdapter> { [ProviderId.Ark] = adapter },
+            MakeSettingsService(EnabledSettings(enabled: ProviderId.Ark)),
+            new MonitoringCacheService(_cacheDir));
+
+        coordinator.QuotaStateChanged += () => { };
+        coordinator.RequestManualRefresh(ProviderId.Ark);
+        await WaitForAsync(() => coordinator.GetDisplayState(ProviderId.Ark).LastGood, TimeSpan.FromSeconds(10), "first good");
+
+        next = PartialWithOneErroredBucket(ProviderId.Ark, "ident-1", freshB1: 70, erroredKey: "b2");
+        ClearManualGate();
+        coordinator.RequestManualRefresh(ProviderId.Ark);
+        await WaitForTrueAsync(
+            () => coordinator.GetDisplayState(ProviderId.Ark).LastGood?.Buckets.FirstOrDefault(b => b.SourceKey == "b1")?.Windows[0].RemainingPercent == 70,
+            TimeSpan.FromSeconds(10), "merged partial snapshot");
+
+        // 部分更新是一次成功：不算失败尝试。
+        Assert.Null(coordinator.GetDisplayState(ProviderId.Ark).LastAttempt);
+        var good = coordinator.GetDisplayState(ProviderId.Ark).LastGood!;
+        var b1 = good.Buckets.Single(b => b.SourceKey == "b1");
+        var b2 = good.Buckets.Single(b => b.SourceKey == "b2");
+        Assert.Equal(70, b1.Windows[0].RemainingPercent);   // 有权威数据 → 新值
+        Assert.Null(b2.Error);                              // 失败桶不再以错误行示人
+        Assert.Equal(60, b2.Windows[0].RemainingPercent);   // 沿用旧值（旧窗口、旧重置时间）
+    }
+
+    /// <summary>
+    /// v1.1.2 P1 回归守卫：Dispose 与在途刷新的竞态。应用退出时信号量被释放，
+    /// 在途刷新的 finally 里 Release 不得把 fire-and-forget 任务炸掉——
+    /// 修复前 Release 抛 ObjectDisposedException，任务在 QuotaStateChanged 之前就死了。
+    /// </summary>
+    [Fact]
+    public async Task Dispose_DuringInFlightRefresh_DrainsAndStillSignals()
+    {
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var adapter = new FakeAdapter(ProviderId.Codex, () =>
+        {
+            started.TrySetResult();                          // 委托真正跑起来再 Dispose，消除 Task.Run 起跑竞态
+            release.Task.Wait(TimeSpan.FromSeconds(10));
+            return Good(ProviderId.Codex);
+        });
+        var coordinator = new MonitoringCoordinator(
+            _clock, new NullMemoryReader(),
+            new Dictionary<ProviderId, IProviderAdapter> { [ProviderId.Codex] = adapter },
+            MakeSettingsService(EnabledSettings(enabled: ProviderId.Codex)),
+            new MonitoringCacheService(_cacheDir));
+
+        var settled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        coordinator.QuotaStateChanged += () => settled.TrySetResult();
+
+        Assert.True(coordinator.RequestManualRefresh(ProviderId.Codex));
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        coordinator.Dispose();      // 刷新在飞时应用退出
+        release.TrySetResult();     // 查询结果在 Dispose 之后才回来
+
+        await settled.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.False(coordinator.RequestManualRefresh(ProviderId.Codex)); // disposed → 拒绝新刷新
     }
 
     /// <summary>Real reader, disabled memory: nothing sampled. (Keeps the fake minimal.)</summary>

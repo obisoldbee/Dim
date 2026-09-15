@@ -156,4 +156,26 @@ public class CliProcessRunnerTests
             File.Delete(script);
         }
     }
+
+    /// <summary>
+    /// v1.1.2 P1 回归守卫：父进程【正常退出】后，继承了重定向 stdout 句柄的孙进程不得
+    /// 让 RunAsync 永远等 EOF。用 cmd 的 `start /b` 生成孙进程 ping（无 node 依赖，守卫
+    /// 永不静默跳过）：cmd 立即退出，ping 继承我们的 stdout 管道再活 60s。修复前
+    /// RunAsync 会一直等管道 EOF（ping 活多久等多久），单飞行锁被永久占死；
+    /// 修复后父退出即终止 Job 残余进程并有界排空，秒回。
+    /// </summary>
+    [Fact]
+    public async Task NormalExit_GrandchildHoldsStdout_ReturnsPromptly()
+    {
+        var runner = new CliProcessRunner();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var run = runner.RunAsync(Cmd("start /b ping -n 60 127.0.0.1 & exit /b 0"), CancellationToken.None);
+        var finished = await Task.WhenAny(run, Task.Delay(TimeSpan.FromSeconds(15)));
+        sw.Stop();
+
+        Assert.True(finished == run,
+            $"RunAsync 被握管道的孙进程拖住了 {sw.Elapsed}（cmd 早已退出，ping 还要活 60s）——这正是 P1-1 要消灭的挂死");
+        var result = await run;
+        Assert.True(result.Success, $"exit={result.ExitCode} timedOut={result.TimedOut}");
+    }
 }
