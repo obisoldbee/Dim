@@ -189,10 +189,12 @@ public class PopoverVisualCheckTool
                 Application.DoEvents();
                 System.Threading.Thread.Sleep(300);
                 Capture(form, Path.Combine(outDir, "memory.png"));
-                form.SetView(MonitorForm.View.Settings);
+                form.Hide();
+                using var settings = new MonitoringSettingsForm(coordinator);
+                settings.Show();
                 Application.DoEvents();
                 System.Threading.Thread.Sleep(300);
-                Capture(form, Path.Combine(outDir, "settings.png"));
+                Capture(settings, Path.Combine(outDir, "settings.png"));
 
                 form.Close();
             }

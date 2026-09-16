@@ -28,7 +28,7 @@ public sealed class MonitoringCoordinator : IDisposable
     private readonly IMemoryReader _memoryReader;
     private readonly IReadOnlyDictionary<ProviderId, IProviderAdapter> _adapters;
     private readonly MonitoringSettingsService _settingsService;
-    private readonly MonitoringCacheService _cache;
+    private readonly IMonitoringCache _cache;
     private readonly SemaphoreSlim _globalSlots = new(2, 2);
     private readonly object _stateLock = new();
 
@@ -38,6 +38,11 @@ public sealed class MonitoringCoordinator : IDisposable
     private readonly Dictionary<ProviderId, ProviderSnapshot?> _lastAttempts = [];
     private readonly Dictionary<ProviderId, ProviderSnapshot?> _lastGoodSnapshots = [];
     private readonly Dictionary<ProviderId, HashSet<string>> _reminderMarks = [];
+
+    private sealed record RefreshRequest(ProviderId Id, int Generation, ProviderSettings Settings,
+        DateTimeOffset AttemptedAt, CancellationTokenSource Cancellation);
+    private readonly Dictionary<ProviderId, RefreshRequest?> _requests = [];
+    private readonly Dictionary<ProviderId, SemaphoreSlim> _providerSlots = [];
 
     private MonitoringSettings _settings;
     private readonly MemoryHistoryBuffer _memoryHistory;
@@ -49,6 +54,7 @@ public sealed class MonitoringCoordinator : IDisposable
     private System.Threading.Timer? _schedulerTimer;
     private readonly CancellationTokenSource _lifetimeCts = new();
     private volatile bool _disposed;
+    private bool _clearingCache;
 
     public event Action? QuotaStateChanged;
     public event Action? MemoryStateChanged;
@@ -62,7 +68,7 @@ public sealed class MonitoringCoordinator : IDisposable
         IMemoryReader memoryReader,
         IReadOnlyDictionary<ProviderId, IProviderAdapter> adapters,
         MonitoringSettingsService settingsService,
-        MonitoringCacheService cache,
+        IMonitoringCache cache,
         MemoryHistoryBuffer? memoryHistory = null)
     {
         _clock = clock;
@@ -81,10 +87,12 @@ public sealed class MonitoringCoordinator : IDisposable
             _lastAttempts[id] = null;
             _lastGoodSnapshots[id] = null;
             _reminderMarks[id] = [];
+            _requests[id] = null;
+            _providerSlots[id] = new SemaphoreSlim(1, 1);
         }
     }
 
-    public MonitoringSettings Settings => _settings;
+    public MonitoringSettings Settings { get { lock (_stateLock) return _settings; } }
     public MemoryHistoryBuffer MemoryHistory => _memoryHistory;
 
     public MemorySample? LatestMemorySample
@@ -131,281 +139,203 @@ public sealed class MonitoringCoordinator : IDisposable
             SchedulerTick);
     }
 
-    /// <summary>Timer tick: dispatch due auto-refreshes within the concurrency cap.</summary>
+    /// <summary>Reserve requests under the lock; the entire CLI/cache operation starts on a worker.</summary>
     internal void ScanAndDispatch()
     {
-        if (_disposed) return;
+        List<RefreshRequest> due = [];
         lock (_stateLock)
         {
+            if (_disposed || _clearingCache) return;
             foreach (ProviderId id in Enum.GetValues<ProviderId>())
             {
-                if (!IsAutoDispatchDueLocked(id)) continue;
-                if (_globalSlots.CurrentCount == 0) return; // both slots busy — try next tick
-                TryBeginDispatchLocked(id);
-                _ = DispatchRefreshCoreAsync(id);
+                var state = _refreshStates[id];
+                if (!_settings.Provider(id).Enabled || _settings.EffectiveRefreshInterval(id) == TimeSpan.Zero
+                    || state.InFlight || state.PausedUntilUserRetry) continue;
+                if (state.LastAttemptUtc is not null && !state.IsDueForAutoRefresh(_clock.UtcNow)) continue;
+                if (BeginRequestLocked(id) is { } request) due.Add(request);
             }
         }
+        foreach (var request in due) QueueRequest(request);
     }
 
-    private bool IsAutoDispatchDueLocked(ProviderId id)
-    {
-        var state = _refreshStates[id];
-        if (!_settings.Provider(id).Enabled) return false;
-        if (state.InFlight) return false;
-        if (state.PausedUntilUserRetry) return false;
-
-        // Never attempted: due immediately (freshly enabled or first start).
-        if (state.LastAttemptUtc is null) return true;
-        return state.IsDueForAutoRefresh(_clock.UtcNow);
-    }
-
-    /// <summary>User-triggered refresh of one provider (manual rules, bypasses backoff and pause).</summary>
     public bool RequestManualRefresh(ProviderId id)
     {
-        if (_disposed) return false;
-        bool began;
+        RefreshRequest? request;
         lock (_stateLock)
         {
+            if (_disposed || _clearingCache || !_settings.Provider(id).Enabled) return false;
             var state = _refreshStates[id];
-            if (!_settings.Provider(id).Enabled) return false;
             if (!state.IsManualRefreshAllowed(_clock.UtcNow)) return false;
-
+            request = BeginRequestLocked(id);
+            if (request is null) return false;
             state.RecordManualStart(_clock.UtcNow);
             state.ResetPause();
-            began = TryBeginDispatchLocked(id);
         }
-        if (began) _ = DispatchRefreshCoreAsync(id);
-        return began;
-    }
-
-    /// <summary>User-triggered refresh of every enabled provider (the 全部刷新 button).</summary>
-    public void RequestManualRefreshAll()
-    {
-        foreach (ProviderId id in Enum.GetValues<ProviderId>())
-        {
-            RequestManualRefresh(id);
-        }
-    }
-
-    /// <summary>Marks in-flight. Caller holds <see cref="_stateLock"/>; single-flight per provider is enforced here.</summary>
-    private bool TryBeginDispatchLocked(ProviderId id)
-    {
-        var state = _refreshStates[id];
-        if (state.InFlight) return false;
-        state.InFlight = true;
+        QueueRequest(request);
         return true;
     }
 
-    private async Task DispatchRefreshCoreAsync(ProviderId id)
+    public void RequestManualRefreshAll()
     {
-        int generation;
-        ProviderSettings settings;
-        DateTimeOffset attemptedAt;
-        lock (_stateLock)
-        {
-            generation = _identityGenerations[id];
-            settings = _settings.Provider(id);
-            attemptedAt = _clock.UtcNow;
-        }
+        foreach (ProviderId id in Enum.GetValues<ProviderId>()) RequestManualRefresh(id);
+    }
 
+    private RefreshRequest? BeginRequestLocked(ProviderId id)
+    {
+        if (_refreshStates[id].InFlight) return null;
+        var request = new RefreshRequest(id, _identityGenerations[id], _settings.Provider(id),
+            _clock.UtcNow, CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token));
+        _requests[id] = request;
+        _refreshStates[id].InFlight = true;
+        return request;
+    }
+
+    private void QueueRequest(RefreshRequest request) =>
+        _ = Task.Run(() => DispatchRefreshCoreAsync(request));
+
+    private bool IsCurrentLocked(RefreshRequest request) =>
+        !_disposed && request.Generation == _identityGenerations[request.Id]
+        && ReferenceEquals(_requests[request.Id], request) && _settings.Provider(request.Id).Enabled;
+
+    private bool IsCurrent(RefreshRequest request)
+    {
+        lock (_stateLock) return IsCurrentLocked(request);
+    }
+
+    private async Task DispatchRefreshCoreAsync(RefreshRequest request)
+    {
+        var id = request.Id;
+        var token = request.Cancellation.Token;
+        var providerAcquired = false;
+        var globalAcquired = false;
         try
         {
-            await _globalSlots.WaitAsync(_lifetimeCts.Token).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
-        {
-            // Normal cancellation — or the app exited while this refresh was still queued
-            // and the semaphore was disposed under it. Neither is a refresh failure.
-            lock (_stateLock) _refreshStates[id].InFlight = false;
-            return;
-        }
-
-        try
-        {
-            if (!_adapters.TryGetValue(id, out var adapter))
+            // A changed context may queue a replacement, but the old process and cache
+            // writer must finish first. Cancellation never creates a third CLI process.
+            await _providerSlots[id].WaitAsync(token).ConfigureAwait(false);
+            providerAcquired = true;
+            await _globalSlots.WaitAsync(token).ConfigureAwait(false);
+            globalAcquired = true;
+            token.ThrowIfCancellationRequested();
+            if (!IsCurrent(request) || !_adapters.TryGetValue(id, out var adapter)) return;
+            ProviderSnapshot snapshot;
+            try
             {
-                lock (_stateLock) _refreshStates[id].InFlight = false;
-                return;
+                snapshot = await adapter.QueryAsync(request.Settings, token).ConfigureAwait(false);
             }
-
-            var snapshot = await adapter.QueryAsync(settings, _lifetimeCts.Token).ConfigureAwait(false);
-            ApplySnapshot(id, snapshot, generation);
+            catch (OperationCanceledException) { return; }
+            catch (Exception ex)
+            {
+                LogService.Error($"Monitoring refresh failed unexpectedly for {id}", ex);
+                snapshot = SnapshotFactory.Failure(id, ProviderErrorKind.ExecutionFailed, "internal error", request.AttemptedAt);
+            }
+            if (!token.IsCancellationRequested) ApplySnapshot(request, snapshot);
         }
-        catch (OperationCanceledException)
-        {
-            var cancelled = SnapshotFactory.Failure(id, ProviderErrorKind.Cancelled, null, attemptedAt);
-            ApplySnapshot(id, cancelled, generation);
-        }
+        catch (OperationCanceledException) { }
         catch (Exception ex)
         {
-            // The adapter contract says it should not throw, but a coordinator crash would
-            // take the whole tray app with it — record as a classified failure instead.
-            LogService.Error($"Monitoring refresh failed unexpectedly for {id}", ex);
-            var failure = SnapshotFactory.Failure(id, ProviderErrorKind.ExecutionFailed, "internal error", attemptedAt);
-            ApplySnapshot(id, failure, generation);
+            LogService.Error($"Monitoring worker failed for {id}", ex);
         }
         finally
         {
-            // Dispose() can race an in-flight refresh on app exit; releasing a disposed
-            // semaphore must not fault this fire-and-forget task before the state-change
-            // signal below fires.
-            try { _globalSlots.Release(); }
-            catch (ObjectDisposedException) { }
+            if (globalAcquired) _globalSlots.Release();
+            if (providerAcquired) _providerSlots[id].Release();
+            lock (_stateLock)
+            {
+                // An obsolete finally must not release the replacement's single-flight.
+                if (ReferenceEquals(_requests[id], request))
+                {
+                    _refreshStates[id].InFlight = false;
+                    _requests[id] = null;
+                }
+            }
+            request.Cancellation.Dispose();
             RaiseQuotaStateChanged();
         }
     }
 
-    private void ApplySnapshot(ProviderId id, ProviderSnapshot snapshot, int generation)
+    private void ApplySnapshot(RefreshRequest request, ProviderSnapshot snapshot)
     {
-        if (_disposed) return;
-        List<QuotaReminderEvent>? reminderEvents = null;
-        var persistState = false;
-
+        var id = request.Id;
+        bool identityChanged;
         lock (_stateLock)
         {
-            if (generation != _identityGenerations[id])
-            {
-                // The identity or settings changed while this query was in flight — the
-                // result describes an account context that no longer applies. Discard.
-                _refreshStates[id].InFlight = false;
-                return;
-            }
-
+            if (!IsCurrentLocked(request)) return;
+            identityChanged = snapshot.IdentityVerified && _identityKeys[id] != snapshot.IdentityKey;
+        }
+        // Disk I/O is serialized per provider, never protected by the UI's state lock.
+        var cached = identityChanged ? _cache.Load(id, snapshot.IdentityKey) : null;
+        List<QuotaReminderEvent> reminders = [];
+        CachedProviderState? persist = null;
+        lock (_stateLock)
+        {
+            if (!IsCurrentLocked(request)) return; // settings can change during cache read
             var now = _clock.UtcNow;
-
-            // Only a VERIFIED identity can trigger the account-context switch. Failure
-            // snapshots carry no verified identity (we may not even know who we asked), so
-            // they never drop the last good snapshot — a timeout must not blank the panel
-            // (A04); it just records the attempt. Unverified SUCCESS replaces the display
-            // snapshot in-session but never loads cross-session cache (§8(4)).
-            var identityChanged = snapshot.IdentityVerified && _identityKeys[id] != snapshot.IdentityKey;
             if (identityChanged)
             {
                 _identityKeys[id] = snapshot.IdentityKey;
-                _identityGenerations[id]++;
-                // Account context switched: the old account's quota and reminder state must
-                // not survive. Verified identities may load their matching cache; unverified
-                // ones (MiniMax) never reuse cross-session state (spec §8(4)).
-                _reminderMarks[id] = LoadMarks(id, snapshot.IdentityKey);
-                if (!snapshot.HasError)
-                {
-                    var cached = _cache.Load(id, snapshot.IdentityKey);
-                    if (cached?.LastGood is not null)
-                    {
-                        // Cached values are shown immediately but keep their own (old)
-                        // success time — the UI marks them stale until the next success.
-                        _lastGoodSnapshots[id] = cached.LastGood;
-                    }
-                }
+                _reminderMarks[id] = cached is null ? [] : new HashSet<string>(cached.ReminderFiredMarks.Where(p => p.Value).Select(p => p.Key));
+                _lastGoodSnapshots[id] = cached?.LastGood;
             }
-
-            // A CREDENTIAL-level failure is not a transient outage: the account whose
-            // quota we were showing is gone (signed out / token revoked). Failure snapshots
-            // carry no verified identity, so `identityChanged` above stays false and the
-            // previous account's numbers would keep being displayed — dimmed, but still
-            // wrong, and still driving reminders. Drop them (A09). Transport-level failures
-            // (timeout / parse / api) deliberately do NOT clear anything (A04).
             if (snapshot.Error == ProviderErrorKind.NotSignedIn)
             {
-                if (_lastGoodSnapshots.TryGetValue(id, out var previous) && previous is not null)
-                {
-                    _lastGoodSnapshots[id] = null;
-                    _reminderMarks[id] = [];
-                    _identityKeys[id] = null;
-                    // Deliberately NOT setting persistState: PersistProviderState writes
-                    // `snapshot` as LastGood, and this snapshot is the FAILURE one — saving
-                    // it would poison the cache with an error record. The on-disk cache is
-                    // keyed by identity, so the signed-out account's file simply stops being
-                    // loaded (only verified identities read cache).
-                    LogService.Info($"Monitoring[{id}] identity no longer signed in — previous quota and reminder marks dropped");
-                }
+                _lastGoodSnapshots[id] = null;
+                _reminderMarks[id] = [];
+                _identityKeys[id] = null;
             }
-
             _lastAttempts[id] = snapshot.HasError ? snapshot : null;
-            _refreshStates[id].RecordAttempt(snapshot, now);
-
-            // One sanitized line per refresh outcome — command type, CLI version, elapsed
-            // ms and error CLASSIFICATION only. Raw stderr / account data never reach the
-            // log (spec §8(5)).
-            LogService.Info(snapshot.HasError
-                ? $"Monitoring[{id}] refresh failed after {(int)(now - snapshot.AttemptedAtUtc).TotalMilliseconds}ms: {snapshot.Error} ({snapshot.ErrorMessage ?? "no detail"}) cli={snapshot.CliVersion ?? "?"}"
-                : $"Monitoring[{id}] refresh ok in {(int)(now - snapshot.AttemptedAtUtc).TotalMilliseconds}ms: {snapshot.Buckets.Count} bucket(s), {snapshot.Buckets.Sum(b => b.Windows.Count)} window(s), cli={snapshot.CliVersion ?? "?"}");
-
+            _refreshStates[id].RecordAttempt(snapshot, now, _settings.EffectiveRefreshInterval(id));
+            _refreshStates[id].InFlight = true; // includes persistence, until this worker settles
             if (!snapshot.HasError && snapshot.SucceededAtUtc is not null)
             {
-                // PRD §5.2(8): a partial result (Ark per-bucket errors) replaces only the
-                // buckets it carries authoritative data for — errored buckets keep the
-                // previous good values and their old reset times, same identity only.
-                if (snapshot.IsPartial
-                    && _lastGoodSnapshots[id] is { } previousGood
-                    && previousGood.IdentityKey == snapshot.IdentityKey)
-                {
-                    snapshot = SnapshotMerger.MergePartial(previousGood, snapshot);
-                }
+                if (snapshot.IsPartial && _lastGoodSnapshots[id] is { } previous
+                    && previous.IdentityKey == snapshot.IdentityKey)
+                    snapshot = SnapshotMerger.MergePartial(previous, snapshot);
                 _lastGoodSnapshots[id] = snapshot;
-                if (snapshot.IdentityVerified) persistState = true;
-            }
-
-            if (_settings.RemindersEnabled && !snapshot.HasError)
-            {
-                try
-                {
-                    reminderEvents = [.. ReminderEvaluator.Evaluate(snapshot, _reminderMarks[id], now)];
-                    if (reminderEvents.Count > 0 && snapshot.IdentityVerified) persistState = true;
-                }
-                catch (Exception ex)
-                {
-                    // Reminder failure must never disturb the quota display (plan §3.3).
-                    LogService.Error("Reminder evaluation failed", ex);
-                }
+                if (_settings.RemindersEnabled)
+                    reminders = [.. ReminderEvaluator.Evaluate(snapshot, _reminderMarks[id], now,
+                        FreshnessEvaluator.MaxAge(_settings.EffectiveRefreshInterval(id)))];
+                if (snapshot.IdentityVerified)
+                    persist = new CachedProviderState
+                    {
+                        Provider = id, IdentityKey = snapshot.IdentityKey, LastGood = snapshot,
+                        ReminderFiredMarks = _reminderMarks[id].ToDictionary(key => key, _ => true),
+                    };
             }
         }
-
-        if (persistState)
+        if (!IsCurrent(request)) return;
+        if (snapshot.Error == ProviderErrorKind.NotSignedIn) _cache.ClearProvider(id);
+        else if (persist is not null)
         {
-            PersistProviderState(id, snapshot);
+            _cache.Save(persist);
+            // The per-provider slot still belongs to us, so an invalidated write can
+            // be removed without ever deleting a newer request's cache.
+            if (!IsCurrent(request)) { _cache.ClearProvider(id); return; }
         }
-
-        if (reminderEvents is { Count: > 0 })
+        var version = System.Text.RegularExpressions.Regex.Match(snapshot.CliVersion ?? "", @"\b\d+\.\d+\.\d+(?:-[A-Za-z0-9.]+)?\b");
+        var elapsedMs = Math.Max(0, (_clock.UtcNow - request.AttemptedAt).TotalMilliseconds);
+        var detail = snapshot.HasError ? $"failed: {snapshot.Error}" : $"ok: {snapshot.Buckets.Count} bucket(s)";
+        LogService.Info($"Monitoring[{id}] quota query {detail}; elapsed={elapsedMs:0}ms cli={(version.Success ? version.Value : "?")}");
+        foreach (var reminder in reminders)
         {
-            foreach (var evt in reminderEvents)
+            lock (_stateLock)
             {
-                ReminderFired?.Invoke(evt);
+                if (!IsCurrentLocked(request) || !_settings.RemindersEnabled) return;
             }
+            ReminderFired?.Invoke(reminder with { ContextGeneration = request.Generation });
         }
     }
 
-    private void PersistProviderState(ProviderId id, ProviderSnapshot snapshot)
+    internal bool CanDeliverReminder(QuotaReminderEvent reminder)
     {
-        HashSet<string> marks;
         lock (_stateLock)
         {
-            marks = [.. _reminderMarks[id]];
-        }
-        try
-        {
-            _cache.Save(new CachedProviderState
-            {
-                Provider = id,
-                IdentityKey = snapshot.IdentityKey,
-                LastGood = snapshot,
-                ReminderFiredMarks = marks.ToDictionary(k => k, _ => true),
-            });
-        }
-        catch (Exception ex)
-        {
-            // Cache write failure is reported, never faked (spec §8(6)); display continues.
-            LogService.Error("Monitoring cache save failed", ex);
+            return !_disposed && _settings.RemindersEnabled && _settings.Provider(reminder.Provider).Enabled
+                && reminder.ContextGeneration == _identityGenerations[reminder.Provider]
+                && reminder.IdentityKey == _identityKeys[reminder.Provider];
         }
     }
 
-    private HashSet<string> LoadMarks(ProviderId id, string identityKey)
-    {
-        var stored = _cache.Load(id, identityKey)?.ReminderFiredMarks;
-        return stored is { Count: > 0 } ? [.. stored.Keys] : [];
-    }
-
-    /// <summary>Builds the immutable view state for the panel. Snapshot + refresh state + freshness, never a doctored snapshot.</summary>
     public ProviderDisplayState GetDisplayState(ProviderId id)
     {
         lock (_stateLock)
@@ -420,7 +350,7 @@ public sealed class MonitoringCoordinator : IDisposable
                 Refreshing = state.InFlight,
                 LastGood = lastGood,
                 LastAttempt = _lastAttempts[id],
-                Stale = lastGood is not null && FreshnessEvaluator.IsStale(lastGood, _clock.UtcNow),
+                Stale = lastGood is not null && FreshnessEvaluator.IsStale(lastGood, _clock.UtcNow, FreshnessEvaluator.MaxAge(_settings.EffectiveRefreshInterval(id))),
                 PausedUntilUserRetry = state.PausedUntilUserRetry,
             };
         }
@@ -466,48 +396,94 @@ public sealed class MonitoringCoordinator : IDisposable
     /// <summary>Applies new settings from the monitoring settings form.</summary>
     public void ApplySettings(MonitoringSettings newSettings)
     {
-        bool changedEnables = false;
+        List<CancellationTokenSource> cancelled = [];
         lock (_stateLock)
         {
+            if (_disposed) return;
             var old = _settings;
-            _settings = newSettings;
-
+            _settings = MonitoringSettingsService.Normalize(newSettings);
             foreach (ProviderId id in Enum.GetValues<ProviderId>())
             {
-                var oldP = old.Provider(id);
-                var newP = newSettings.Provider(id);
+                var before = old.Provider(id);
+                var after = _settings.Provider(id);
                 var state = _refreshStates[id];
-
-                if (!Equals(oldP.CliPath, newP.CliPath))
+                if (before.Enabled != after.Enabled || !string.Equals(before.CliPath, after.CliPath, StringComparison.Ordinal))
                 {
-                    // A path change invalidates both the version probe and the pause state.
+                    _identityGenerations[id]++;
+                    if (_requests[id] is { } active) cancelled.Add(active.Cancellation);
+                    _requests[id] = null;
+                    state.InFlight = false;
                     state.ResetPause();
                     state.LastAttemptUtc = null;
-                    changedEnables = true;
+                    state.LastManualStartUtc = null;
+                    // A different executable is a different account context until verified.
+                    _identityKeys[id] = null;
+                    _lastGoodSnapshots[id] = null;
+                    _lastAttempts[id] = null;
+                    _reminderMarks[id] = [];
                 }
-
-                if (!oldP.Enabled && newP.Enabled)
+                else if (old.EffectiveRefreshInterval(id) != _settings.EffectiveRefreshInterval(id))
                 {
-                    // First enable → query immediately (spec §7).
-                    state.ResetPause();
-                    state.LastAttemptUtc = null;
-                    changedEnables = true;
-                }
-
-                if (oldP.Enabled && !newP.Enabled)
-                {
-                    state.ResetPause();
+                    state.Reschedule(_settings.EffectiveRefreshInterval(id));
                 }
             }
         }
-
-        if (changedEnables)
+        foreach (var cts in cancelled)
         {
-            ScanAndDispatch();
+            try { _ = cts.CancelAsync(); } catch (ObjectDisposedException) { }
         }
+        ScanAndDispatch();
         RaiseQuotaStateChanged();
         SettingsApplied?.Invoke();
     }
+
+    /// <summary>Only owned quota state files are cleared; credentials/settings/history are untouched.</summary>
+    public async Task<bool> ClearQuotaCacheAsync()
+    {
+        List<CancellationTokenSource> cancelled = [];
+        lock (_stateLock)
+        {
+            if (_disposed || _clearingCache) return false;
+            _clearingCache = true;
+            foreach (ProviderId id in Enum.GetValues<ProviderId>())
+            {
+                _identityGenerations[id]++;
+                if (_requests[id] is { } active) cancelled.Add(active.Cancellation);
+                _requests[id] = null;
+                _refreshStates[id].InFlight = false;
+                _lastGoodSnapshots[id] = null; _lastAttempts[id] = null;
+                _identityKeys[id] = null; _reminderMarks[id] = [];
+            }
+        }
+        foreach (var cts in cancelled)
+            try { _ = cts.CancelAsync(); } catch (ObjectDisposedException) { }
+        var success = await Task.Run(async () =>
+        {
+            var ok = true;
+            foreach (ProviderId id in Enum.GetValues<ProviderId>())
+            {
+                await _providerSlots[id].WaitAsync().ConfigureAwait(false);
+                try { _cache.ClearProvider(id); }
+                catch (Exception) { ok = false; }
+                finally { _providerSlots[id].Release(); }
+            }
+            return ok;
+        }).ConfigureAwait(false);
+        lock (_stateLock) _clearingCache = false;
+        RaiseQuotaStateChanged();
+        return success;
+    }
+
+    public string ExportDiagnostics() => System.Text.Json.JsonSerializer.Serialize(new
+    {
+        Version = typeof(MonitoringCoordinator).Assembly.GetName().Version?.ToString(),
+        Providers = GetDisplayStates().Select(state => new
+        {
+            Provider = state.Provider.ToString(), state.Enabled, state.Refreshing, state.Stale,
+            state.PausedUntilUserRetry, Error = state.LastAttempt?.Error.ToString(),
+            LastSuccessUtc = state.LastGood?.SucceededAtUtc, BucketCount = state.LastGood?.Buckets.Count ?? 0,
+        }),
+    }, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
 
     public void RaiseQuotaStateChanged() => QuotaStateChanged?.Invoke();
 
@@ -522,7 +498,7 @@ public sealed class MonitoringCoordinator : IDisposable
         _memoryTimer?.Dispose();
         _schedulerTimer?.Dispose();
         _memoryReader.Dispose();
-        _lifetimeCts.Dispose();
-        _globalSlots.Dispose();
+        // Workers own their linked CTS until finally. SemaphoreSlim has no native
+        // wait handle here; retaining it until GC lets outstanding workers release safely.
     }
 }

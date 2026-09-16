@@ -43,8 +43,17 @@ public sealed class ProviderRefreshState
     public static bool IsPauseableFailure(ProviderErrorKind kind) =>
         kind is ProviderErrorKind.NotSignedIn or ProviderErrorKind.UnsupportedEntry or ProviderErrorKind.CliNotFound;
 
-    /// <summary>Records an attempt outcome, advancing or resetting the backoff ladder.</summary>
-    public void RecordAttempt(ProviderSnapshot snapshot, DateTimeOffset nowUtc)
+    /// <summary>
+    /// Records an attempt outcome, advancing or resetting the backoff ladder.
+    /// <paramref name="autoInterval"/> is the provider's EFFECTIVE auto-refresh cadence
+    /// (global default or per-source override); <see cref="TimeSpan.Zero"/> means the
+    /// source is manual-only, so a success schedules nothing. Failure backoff keeps its
+    /// own ladder — a short user interval must not shrink it, manual-only must not disable it.
+    /// </summary>
+    public void RecordAttempt(ProviderSnapshot snapshot, DateTimeOffset nowUtc) =>
+        RecordAttempt(snapshot, nowUtc, AutoRefreshInterval);
+
+    public void RecordAttempt(ProviderSnapshot snapshot, DateTimeOffset nowUtc, TimeSpan autoInterval)
     {
         LastAttemptUtc = nowUtc;
         InFlight = false;
@@ -53,7 +62,7 @@ public sealed class ProviderRefreshState
             LastSuccessUtc = snapshot.SucceededAtUtc;
             BackoffIndex = 0;
             PausedUntilUserRetry = false;
-            NextAutoAttemptUtc = nowUtc + AutoRefreshInterval;
+            NextAutoAttemptUtc = autoInterval > TimeSpan.Zero ? nowUtc + autoInterval : null;
             return;
         }
 
@@ -67,6 +76,18 @@ public sealed class ProviderRefreshState
         var delay = BackoffLadder[Math.Min(BackoffIndex, BackoffLadder.Length - 1)];
         BackoffIndex++;
         NextAutoAttemptUtc = nowUtc + delay;
+    }
+
+    public void Reschedule(TimeSpan interval)
+    {
+        if (PausedUntilUserRetry) return;
+        if (interval == TimeSpan.Zero) { NextAutoAttemptUtc = null; return; }
+        if (LastAttemptUtc is { } last)
+        {
+            var delay = BackoffIndex > 0
+                ? BackoffLadder[Math.Min(BackoffIndex - 1, BackoffLadder.Length - 1)] : interval;
+            NextAutoAttemptUtc = last + delay;
+        }
     }
 
     public void ResetPause()

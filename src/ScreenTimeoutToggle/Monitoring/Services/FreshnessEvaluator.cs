@@ -15,10 +15,13 @@ public static class FreshnessEvaluator
     public static readonly TimeSpan MemoryMaxAge = TimeSpan.FromSeconds(30);
 
     /// <summary>True when the snapshot must be shown as expired (its data can no longer be called current).</summary>
-    public static bool IsStale(ProviderSnapshot snapshot, DateTimeOffset nowUtc)
+    public static TimeSpan MaxAge(TimeSpan refreshInterval) =>
+        refreshInterval > QuotaMaxAge / 2 ? refreshInterval * 2 : QuotaMaxAge;
+
+    public static bool IsStale(ProviderSnapshot snapshot, DateTimeOffset nowUtc, TimeSpan? maxAge = null)
     {
         if (snapshot.SucceededAtUtc is null) return true; // never succeeded → nothing fresh about it
-        if (nowUtc - snapshot.SucceededAtUtc.Value > QuotaMaxAge) return true;
+        if (nowUtc - snapshot.SucceededAtUtc.Value > (maxAge ?? QuotaMaxAge)) return true;
 
         // "窗口重置点已过而未复核": any window whose reset time passed without a newer
         // successful refresh makes the whole snapshot stale — the reset may have changed
@@ -39,7 +42,11 @@ public sealed record QuotaReminderEvent(
     int Level,
     double RemainingPercent,
     DateTimeOffset? ResetsAtUtc,
-    string ReminderKey);
+    string ReminderKey)
+{
+    public string? IdentityKey { get; init; }
+    public int ContextGeneration { get; init; }
+}
 
 /// <summary>
 /// Quota reminder rules (spec §7, R09):
@@ -62,7 +69,7 @@ public static class ReminderEvaluator
     /// caller can persist them.
     /// </summary>
     public static IReadOnlyList<QuotaReminderEvent> Evaluate(
-        ProviderSnapshot snapshot, HashSet<string> marks, DateTimeOffset nowUtc)
+        ProviderSnapshot snapshot, HashSet<string> marks, DateTimeOffset nowUtc, TimeSpan? maxAge = null)
     {
         if (!snapshot.IdentityVerified) return [];
 
@@ -72,7 +79,7 @@ public static class ReminderEvaluator
         // otherwise silence reminders for the weekly window — which is still valid data.
         // The age gate is snapshot-wide; the reset-point gate belongs to its own window.
         if (snapshot.SucceededAtUtc is null) return [];
-        if (nowUtc - snapshot.SucceededAtUtc.Value > FreshnessEvaluator.QuotaMaxAge) return [];
+        if (nowUtc - snapshot.SucceededAtUtc.Value > (maxAge ?? FreshnessEvaluator.QuotaMaxAge)) return [];
 
         var events = new List<QuotaReminderEvent>();
         foreach (var bucket in snapshot.Buckets)
@@ -109,7 +116,7 @@ public static class ReminderEvaluator
                 if (level == 2) marks.Add(mildKey); // the worse event subsumes the milder one
                 events.Add(new QuotaReminderEvent(
                     snapshot.Provider, bucket.SourceKey, window.SourceKey, level,
-                    window.RemainingPercent.Value, window.ResetsAtUtc, key));
+                    window.RemainingPercent.Value, window.ResetsAtUtc, key) { IdentityKey = snapshot.IdentityKey });
             }
         }
 

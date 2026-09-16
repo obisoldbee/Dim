@@ -36,7 +36,14 @@ public sealed record CachedProviderState
 /// absent.</item>
 /// </list>
 /// </summary>
-public sealed class MonitoringCacheService
+public interface IMonitoringCache
+{
+    CachedProviderState? Load(ProviderId provider, string identityKey);
+    bool Save(CachedProviderState state);
+    void ClearProvider(ProviderId provider);
+}
+
+public sealed class MonitoringCacheService : IMonitoringCache
 {
     public const long DefaultMaxTotalBytes = 10 * 1024 * 1024;
 
@@ -125,18 +132,9 @@ public sealed class MonitoringCacheService
     /// <summary>Deletes every state file for one provider (identity reset / diagnostics).</summary>
     public void ClearProvider(ProviderId provider)
     {
-        try
-        {
-            if (!Directory.Exists(DirectoryPath)) return;
-            foreach (var file in Directory.EnumerateFiles(DirectoryPath, FileNamePrefix(provider) + "*.state.json"))
-            {
-                File.Delete(file);
-            }
-        }
-        catch (IOException)
-        {
-            // Best effort.
-        }
+        if (!Directory.Exists(DirectoryPath)) return;
+        foreach (var file in Directory.EnumerateFiles(DirectoryPath, FileNamePrefix(provider) + "*.state.json"))
+            File.Delete(file); // callers must see failures; never report a false successful clear
     }
 
     public long TotalSizeBytes()

@@ -239,6 +239,12 @@ public sealed record ProviderSettings
 
     /// <summary>Optional explicit CLI path. Invalid explicit paths are an error, never silently replaced.</summary>
     public string? CliPath { get; init; }
+
+    /// <summary>
+    /// Per-source auto-refresh override in minutes. Null = follow the global default
+    /// (<see cref="MonitoringSettings.RefreshIntervalMinutes"/>); 0 = manual only.
+    /// </summary>
+    public int? RefreshIntervalMinutes { get; init; }
 }
 
 /// <summary>
@@ -248,7 +254,7 @@ public sealed record ProviderSettings
 /// </summary>
 public sealed record MonitoringSettings
 {
-    public int SchemaVersion { get; init; } = 1;
+    public int SchemaVersion { get; init; } = 2;
 
     /// <summary>Memory monitoring defaults to on.</summary>
     public bool MemoryEnabled { get; init; } = true;
@@ -269,10 +275,38 @@ public sealed record MonitoringSettings
     /// </summary>
     public bool LeftClickOpensPopover { get; init; } = true;
 
+    /// <summary>
+    /// Global auto-refresh cadence in minutes (spec §7 default: 5). 0 = manual only —
+    /// no scheduled queries at all. Manual refresh, the 15 s cooldown, failure backoff,
+    /// auth pause, single-flight and the global concurrency cap all stay in force.
+    /// Allowed values: 0, 1, 5, 15, 30. Invalid persisted values migrate to the default.
+    /// </summary>
+    public int RefreshIntervalMinutes { get; init; } = 5;
+
+    public bool ShowArkAgentPlan { get; init; } = true;
+    public bool ShowArkCodingPlan { get; init; } = true;
+
+    public bool IsProductVisible(ProviderId provider, string sourceKey) => provider != ProviderId.Ark || sourceKey switch
+    {
+        "agent-plan" or "agent-plan-team" => ShowArkAgentPlan,
+        "coding-plan" or "coding-plan-team" => ShowArkCodingPlan,
+        _ => true, // never hide unknown products
+    };
+
     public IReadOnlyList<ProviderSettings> Providers { get; init; } = CreateDefaultProviders();
 
     public ProviderSettings Provider(ProviderId id) =>
         Providers.FirstOrDefault(p => p.Id == id) ?? new ProviderSettings { Id = id, Enabled = false };
+
+    /// <summary>
+    /// The interval that actually drives one provider's schedule: its own override when
+    /// set, otherwise the global default. Zero means manual-only either way.
+    /// </summary>
+    public TimeSpan EffectiveRefreshInterval(ProviderId id)
+    {
+        var minutes = Provider(id).RefreshIntervalMinutes ?? RefreshIntervalMinutes;
+        return TimeSpan.FromMinutes(minutes is 0 or 1 or 5 or 15 or 30 ? minutes : 5);
+    }
 
     public static IReadOnlyList<ProviderSettings> CreateDefaultProviders() =>
     [

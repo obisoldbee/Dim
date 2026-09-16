@@ -104,6 +104,11 @@ public class TrayApp : ApplicationContext
 
     /// <summary>Single popover instance (spec R02): null until first opened, reused afterwards.</summary>
     private MonitorForm? _monitorForm;
+    private MonitoringSettingsForm? _monitorSettingsForm;
+    private Task<bool> _lastSettingsPowerApply = Task.FromResult(true);
+    private bool _lastSettingsAutoStartApplied = true;
+    private bool _settingsAutoStartRetryNeeded;
+    private bool _settingsPowerRetryNeeded;
 
     /// <summary>Global hotkey that toggles the popover (default Ctrl+Alt+D, monitoring.json configurable).</summary>
     private GlobalHotkeyService? _popoverHotkey;
@@ -288,7 +293,7 @@ public class TrayApp : ApplicationContext
         // 2026-09-13: the classic settings dialog was merged into the popover's settings
         // view (user request) — the menu item now opens that view. SettingsForm remains
         // for its test coverage and as a fallback code path.
-        var settingsItem = new ToolStripMenuItem(LocalizationService.Get("menu.settings"), null, (_, _) => ToggleMonitorPopover(MonitorForm.View.Settings))
+        var settingsItem = new ToolStripMenuItem(LocalizationService.Get("menu.settings"), null, (_, _) => OpenMonitorSettings())
         {
             Name = "settingsItem"
         };
@@ -353,9 +358,7 @@ public class TrayApp : ApplicationContext
         var desired = _monitorCoordinator?.Settings.PopoverHotkey ?? "Ctrl+Alt+D";
         if (string.Equals(desired, _popoverHotkeyRegistered, StringComparison.OrdinalIgnoreCase)) return;
 
-        _popoverHotkey?.Dispose();
-        _popoverHotkey = null;
-        RegisterPopoverHotkey(desired);
+        TryChangePopoverHotkey(desired);
     }
 
     /// <summary>
@@ -400,14 +403,18 @@ public class TrayApp : ApplicationContext
 
     private void OnQuotaReminder(QuotaReminderEvent evt)
     {
-        var providerName = LocalizationService.Get($"monitor.provider.{evt.Provider.ToString().ToLowerInvariant()}");
-        var windowName = MonitorForm.LocalizeWindowKey(evt.WindowKey, null);
-        var resetText = evt.ResetsAtUtc is { } reset ? MonitorForm.FormatTime(reset) : LocalizationService.Get("monitor.reset_unknown");
-        ShowBubbleAsync(
-            LocalizationService.Get("monitor.bubble.reminder_title"),
-            LocalizationService.Get("monitor.bubble.reminder",
-                providerName, windowName, MonitorForm.FormatPercent(evt.RemainingPercent), resetText),
-            ToolTipIcon.Warning);
+        RunOnUi(() =>
+        {
+            // Delivery can wait behind other UI messages; recheck the context here,
+            // not only on the worker that produced the event.
+            if (_monitorCoordinator?.CanDeliverReminder(evt) != true) return;
+            var providerName = LocalizationService.Get($"monitor.provider.{evt.Provider.ToString().ToLowerInvariant()}");
+            var windowName = MonitorForm.LocalizeWindowKey(evt.WindowKey, null);
+            var resetText = evt.ResetsAtUtc is { } reset ? MonitorForm.FormatTime(reset) : LocalizationService.Get("monitor.reset_unknown");
+            ShowBubble(LocalizationService.Get("monitor.bubble.reminder_title"),
+                LocalizationService.Get("monitor.bubble.reminder", providerName, windowName,
+                    MonitorForm.FormatPercent(evt.RemainingPercent), resetText), ToolTipIcon.Warning);
+        });
     }
 
     /// <summary>
@@ -436,40 +443,66 @@ public class TrayApp : ApplicationContext
             return age >= TimeSpan.Zero && age <= TimeSpan.FromMilliseconds(400);
     }
 
+    private void OpenMonitorSettings()
+    {
+        if (_monitorCoordinator is null) return;
+        _monitorForm?.Hide();
+        if (_monitorSettingsForm is null || _monitorSettingsForm.IsDisposed)
+            _monitorSettingsForm = new MonitoringSettingsForm(_monitorCoordinator, () => _config, ApplyMonitorSettingsAsync);
+        if (_monitorSettingsForm.WindowState == FormWindowState.Minimized) _monitorSettingsForm.WindowState = FormWindowState.Normal;
+        _monitorSettingsForm.Show();
+        _monitorSettingsForm.Activate();
+    }
+
+    private bool TryChangePopoverHotkey(string desired)
+    {
+        if (string.Equals(desired, _popoverHotkeyRegistered, StringComparison.OrdinalIgnoreCase)
+            && _popoverHotkey?.IsRegistered == true) return true;
+        var previous = _popoverHotkeyRegistered;
+        _popoverHotkey?.Dispose(); _popoverHotkey = null;
+        RegisterPopoverHotkey(desired);
+        if (_popoverHotkey?.IsRegistered == true && _popoverHotkeyRegistered == desired) return true;
+        if (previous is not null) RegisterPopoverHotkey(previous);
+        return false;
+    }
+
+    private async Task<SettingsApplyResult> ApplyMonitorSettingsAsync(AppConfig app, MonitoringSettings monitoring)
+    {
+        if (_monitorCoordinator is null) return new(false, false);
+        var oldMonitoring = _monitorCoordinator.Settings;
+        _lastSettingsPowerApply = Task.FromResult(true);
+        _lastSettingsAutoStartApplied = true;
+        var appSaved = ApplyFullSettings(app);
+        var modeHotkeyApplied = _hotkeySvc.IsRegistered && Equals(app.Hotkey, _config.Hotkey);
+        var panelApplied = TryChangePopoverHotkey(monitoring.PopoverHotkey);
+        var effectiveMonitoring = panelApplied ? monitoring : monitoring with { PopoverHotkey = oldMonitoring.PopoverHotkey };
+        var monitoringSaved = _monitorCoordinator.SaveSettings(effectiveMonitoring);
+        if (monitoringSaved) _monitorCoordinator.ApplySettings(effectiveMonitoring);
+        else TryChangePopoverHotkey(oldMonitoring.PopoverHotkey);
+        var powerApplied = await _lastSettingsPowerApply;
+        return new(appSaved, monitoringSaved, modeHotkeyApplied, panelApplied, _lastSettingsAutoStartApplied, powerApplied);
+    }
+
     private void ToggleMonitorPopover(MonitorForm.View initialView = MonitorForm.View.Quota, bool suppressIfJustDeactivated = false)
     {
         if (_monitorCoordinator is null)
         {
             ShowBubble(LocalizationService.Get("monitor.bubble.unavailable_title"),
-                       LocalizationService.Get("monitor.bubble.unavailable"),
-                       ToolTipIcon.Warning);
+                LocalizationService.Get("monitor.bubble.unavailable"), ToolTipIcon.Warning);
             return;
         }
-
-        if (_monitorForm is { IsDisposed: false } && _monitorForm.Visible)
+        if (_monitorForm is { IsDisposed: false, Visible: true })
         {
-            if (_monitorForm.CurrentView == initialView)
-            {
-                _monitorForm.Close();
-            }
-            else
-            {
-                _monitorForm.SetView(initialView);
-                _monitorForm.Activate();
-            }
+            if (_monitorForm.CurrentView == initialView) _monitorForm.Hide();
+            else { _monitorForm.SetView(initialView); _monitorForm.Activate(); }
             return;
         }
-
+        if (suppressIfJustDeactivated
+            && ShouldSuppressReopenAfterDeactivate(_monitorForm?.LastDeactivateClosedAtUtc, DateTimeOffset.UtcNow)) return;
         if (_monitorForm is null || _monitorForm.IsDisposed)
         {
-            if (suppressIfJustDeactivated
-                && ShouldSuppressReopenAfterDeactivate(_monitorForm?.LastDeactivateClosedAtUtc, DateTimeOffset.UtcNow))
-            {
-                return; // the same click already closed it — do not flash it back open
-            }
-            _monitorForm = new MonitorForm(_monitorCoordinator,
-                appConfigGetter: () => _config,
-                appConfigApplier: ApplyFullSettings);
+            _monitorForm = new MonitorForm(_monitorCoordinator);
+            _monitorForm.SettingsRequested += OpenMonitorSettings;
         }
         _monitorForm.SetView(initialView);
         _monitorForm.ShowAnchoredToTray(_notify);
@@ -764,7 +797,7 @@ public class TrayApp : ApplicationContext
         // E1: Hotkey change — try new key first, rollback on failure (before persisting).
         // The only thing read off newCfg from here on is the key the user ASKED for;
         // every other field is read off effectiveCfg.
-        if (!Equals(newCfg.Hotkey, oldCfg.Hotkey))
+        if (!Equals(newCfg.Hotkey, oldCfg.Hotkey) || !_hotkeySvc.IsRegistered)
         {
             var attemptedHotkey = newCfg.Hotkey;
 
@@ -835,10 +868,21 @@ public class TrayApp : ApplicationContext
         }
         _config = effectiveCfg;
 
-        if (effectiveCfg.AutoStart != oldCfg.AutoStart)
+        if (effectiveCfg.AutoStart != oldCfg.AutoStart || _settingsAutoStartRetryNeeded)
         {
-            if (effectiveCfg.AutoStart) _autoStartSvc.Enable();
-            else _autoStartSvc.Disable();
+            try
+            {
+                if (effectiveCfg.AutoStart) _autoStartSvc.Enable();
+                else _autoStartSvc.Disable();
+                _lastSettingsAutoStartApplied = _autoStartSvc.IsEnabled() == effectiveCfg.AutoStart;
+                _settingsAutoStartRetryNeeded = !_lastSettingsAutoStartApplied;
+            }
+            catch (Exception ex)
+            {
+                _lastSettingsAutoStartApplied = false;
+                _settingsAutoStartRetryNeeded = true;
+                LogService.Error("Autostart settings could not be applied", ex);
+            }
         }
 
         _modeSvc.UpdateConfig(effectiveCfg);
@@ -851,11 +895,12 @@ public class TrayApp : ApplicationContext
             _ => false // Unknown — no reapply needed
         };
 
-        if (currentModeValuesChanged)
+        if (currentModeValuesChanged || _settingsPowerRetryNeeded)
         {
             // v1.0.6: powercfg must never run on the UI thread here. Fire-and-forget is
             // fine: failures surface as a balloon, not a return value.
-            _ = ApplyCurrentModeTimeoutsAsync();
+            _settingsPowerRetryNeeded = true;
+            _lastSettingsPowerApply = ApplyCurrentModeTimeoutsAsync();
         }
 
         // Language change: update runtime language, rebuild menu, notify user
@@ -890,17 +935,19 @@ public class TrayApp : ApplicationContext
     /// describing behaviour the code did not have.
     /// </para>
     /// </remarks>
-    private async Task ApplyCurrentModeTimeoutsAsync()
+    private async Task<bool> ApplyCurrentModeTimeoutsAsync()
     {
         if (Interlocked.CompareExchange(ref _applying, 1, 0) != 0)
         {
             LogService.Info("Timeout re-apply ignored: an apply is already in progress");
-            return;
+            return false;
         }
 
         try
         {
             await Task.Run(() => _modeSvc.ReapplyCurrentMode());
+            _settingsPowerRetryNeeded = false;
+            return true;
         }
         catch (PowerConfigException ex)
         {
@@ -918,6 +965,7 @@ public class TrayApp : ApplicationContext
         {
             Volatile.Write(ref _applying, 0);
         }
+        return false;
     }
 
     /// <summary>
@@ -1060,6 +1108,7 @@ public class TrayApp : ApplicationContext
             try { _iconApp.Dispose(); } catch { /* best effort */ }
             try { _msgWindow.DestroyHandle(); } catch { /* best effort */ }
             try { _syncRoot.Dispose(); } catch { /* best effort */ }
+            try { _monitorSettingsForm?.Dispose(); } catch { /* best effort */ }
             try { _monitorForm?.Dispose(); } catch { /* best effort */ }
             try { _popoverHotkey?.Dispose(); } catch { /* best effort */ }
             try { _monitorCoordinator?.Dispose(); } catch { /* best effort */ }

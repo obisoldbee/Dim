@@ -14,7 +14,7 @@ namespace OBDim.Monitoring.Services;
 /// </summary>
 public sealed class MonitoringSettingsService
 {
-    private const int CurrentSchemaVersion = 1;
+    private const int CurrentSchemaVersion = 2;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -53,7 +53,7 @@ public sealed class MonitoringSettingsService
             var json = File.ReadAllText(FilePath);
             var loaded = JsonSerializer.Deserialize<MonitoringSettings>(json, JsonOptions);
             if (loaded is null) return MonitoringSettings.CreateDefault();
-            return EnsureProvidersComplete(loaded);
+            return Normalize(loaded);
         }
         catch (JsonException ex)
         {
@@ -88,9 +88,7 @@ public sealed class MonitoringSettingsService
             var dir = Path.GetDirectoryName(FilePath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
-            var versioned = settings.SchemaVersion == CurrentSchemaVersion
-                ? settings
-                : settings with { SchemaVersion = CurrentSchemaVersion };
+            var versioned = Normalize(settings);
 
             var tmp = FilePath + ".tmp";
             File.WriteAllText(tmp, JsonSerializer.Serialize(versioned, JsonOptions));
@@ -111,10 +109,16 @@ public sealed class MonitoringSettingsService
         }
     }
 
+    public static bool IsSupportedInterval(int minutes) => minutes is 0 or 1 or 5 or 15 or 30;
+
     /// <summary>Missing provider rows get defaults (upgraded configs keep working).</summary>
-    private static MonitoringSettings EnsureProvidersComplete(MonitoringSettings loaded)
+    public static MonitoringSettings Normalize(MonitoringSettings loaded)
     {
-        var existing = loaded.Providers.Where(p => Enum.IsDefined(p.Id)).ToList();
+        var existing = (loaded.Providers ?? []).Where(p => p is not null && Enum.IsDefined(p.Id))
+            .DistinctBy(p => p.Id).Select(p => p with
+            {
+                RefreshIntervalMinutes = p.RefreshIntervalMinutes is { } value && IsSupportedInterval(value) ? value : null,
+            }).ToList();
         foreach (ProviderId id in Enum.GetValues<ProviderId>())
         {
             if (!existing.Any(p => p.Id == id))
@@ -122,6 +126,11 @@ public sealed class MonitoringSettingsService
                 existing.Add(new ProviderSettings { Id = id, Enabled = false });
             }
         }
-        return loaded with { Providers = existing.OrderBy(p => p.Id).ToList() };
+        return loaded with
+        {
+            SchemaVersion = CurrentSchemaVersion,
+            RefreshIntervalMinutes = IsSupportedInterval(loaded.RefreshIntervalMinutes) ? loaded.RefreshIntervalMinutes : 5,
+            Providers = existing.OrderBy(p => p.Id).ToList(),
+        };
     }
 }

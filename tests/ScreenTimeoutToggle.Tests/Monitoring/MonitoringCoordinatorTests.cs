@@ -222,8 +222,10 @@ public class MonitoringCoordinatorTests : IDisposable
         var succeededAtBeforeFailure = coordinator.GetDisplayState(ProviderId.Codex).LastGood!.SucceededAtUtc;
 
         next = Failure(ProviderId.Codex, ProviderErrorKind.Timeout);
+        // Publication precedes cache persistence; wait for the full single-flight to settle.
+        await WaitForTrueAsync(() => !coordinator.GetDisplayState(ProviderId.Codex).Refreshing, TimeSpan.FromSeconds(10), "previous refresh settled");
         ClearManualGate();
-        coordinator.RequestManualRefresh(ProviderId.Codex);
+        Assert.True(coordinator.RequestManualRefresh(ProviderId.Codex));
         await WaitForAsync(() => coordinator.GetDisplayState(ProviderId.Codex).LastAttempt, TimeSpan.FromSeconds(10), "failure attempt");
 
         var state = coordinator.GetDisplayState(ProviderId.Codex);
@@ -255,8 +257,10 @@ public class MonitoringCoordinatorTests : IDisposable
 
         // 超时失败（身份未核实）：A 的旧快照必须保留显示，只记录失败。
         next = Failure(ProviderId.Codex, ProviderErrorKind.Timeout);
+        // Publication precedes cache persistence; wait for the full single-flight to settle.
+        await WaitForTrueAsync(() => !coordinator.GetDisplayState(ProviderId.Codex).Refreshing, TimeSpan.FromSeconds(10), "previous refresh settled");
         ClearManualGate();
-        coordinator.RequestManualRefresh(ProviderId.Codex);
+        Assert.True(coordinator.RequestManualRefresh(ProviderId.Codex));
         await WaitForAsync(() => coordinator.GetDisplayState(ProviderId.Codex).LastAttempt, TimeSpan.FromSeconds(10), "timeout attempt");
 
         var state = coordinator.GetDisplayState(ProviderId.Codex);
@@ -265,8 +269,10 @@ public class MonitoringCoordinatorTests : IDisposable
 
         // B 账号新鲜成功：身份切换，旧 A 数据不得沿用。
         next = Good(ProviderId.Codex, "ident-B", remaining: 30);
+        // Publication precedes cache persistence; wait for the full single-flight to settle.
+        await WaitForTrueAsync(() => !coordinator.GetDisplayState(ProviderId.Codex).Refreshing, TimeSpan.FromSeconds(10), "previous refresh settled");
         ClearManualGate();
-        coordinator.RequestManualRefresh(ProviderId.Codex);
+        Assert.True(coordinator.RequestManualRefresh(ProviderId.Codex));
         await WaitForTrueAsync(
             () => coordinator.GetDisplayState(ProviderId.Codex).LastGood?.IdentityKey == "ident-B",
             TimeSpan.FromSeconds(10), "fresh B snapshot");
@@ -302,8 +308,10 @@ public class MonitoringCoordinatorTests : IDisposable
 
         // Signed out: the account is gone, so its numbers must go with it.
         next = Failure(ProviderId.Codex, ProviderErrorKind.NotSignedIn);
+        // Publication precedes cache persistence; wait for the full single-flight to settle.
+        await WaitForTrueAsync(() => !coordinator.GetDisplayState(ProviderId.Codex).Refreshing, TimeSpan.FromSeconds(10), "previous refresh settled");
         ClearManualGate();
-        coordinator.RequestManualRefresh(ProviderId.Codex);
+        Assert.True(coordinator.RequestManualRefresh(ProviderId.Codex));
         await WaitForTrueAsync(
             () => coordinator.GetDisplayState(ProviderId.Codex).LastAttempt?.Error == ProviderErrorKind.NotSignedIn,
             TimeSpan.FromSeconds(10), "not-signed-in attempt");
@@ -315,8 +323,10 @@ public class MonitoringCoordinatorTests : IDisposable
 
         // Re-signing in (even as the same identity) brings the panel back to life.
         next = Good(ProviderId.Codex, "ident-A");
+        // Publication precedes cache persistence; wait for the full single-flight to settle.
+        await WaitForTrueAsync(() => !coordinator.GetDisplayState(ProviderId.Codex).Refreshing, TimeSpan.FromSeconds(10), "previous refresh settled");
         ClearManualGate();
-        coordinator.RequestManualRefresh(ProviderId.Codex);
+        Assert.True(coordinator.RequestManualRefresh(ProviderId.Codex));
         await WaitForAsync(() => coordinator.GetDisplayState(ProviderId.Codex).LastGood, TimeSpan.FromSeconds(10), "snapshot after re-signin");
         Assert.Equal("ident-A", coordinator.GetDisplayState(ProviderId.Codex).LastGood!.IdentityKey);
     }
@@ -391,8 +401,10 @@ public class MonitoringCoordinatorTests : IDisposable
 
         // Second identical refresh: dedupe must hold.
         var countBefore = fired.Count;
+        // Publication precedes cache persistence; wait for the full single-flight to settle.
+        await WaitForTrueAsync(() => !coordinator.GetDisplayState(ProviderId.Codex).Refreshing, TimeSpan.FromSeconds(10), "previous refresh settled");
         ClearManualGate();
-        coordinator.RequestManualRefresh(ProviderId.Codex);
+        Assert.True(coordinator.RequestManualRefresh(ProviderId.Codex));
         await Task.Delay(500);
         Assert.Equal(countBefore, fired.Count);
     }
@@ -465,8 +477,10 @@ public class MonitoringCoordinatorTests : IDisposable
         await WaitForAsync(() => coordinator.GetDisplayState(ProviderId.Ark).LastGood, TimeSpan.FromSeconds(10), "first good");
 
         next = PartialWithOneErroredBucket(ProviderId.Ark, "ident-1", freshB1: 70, erroredKey: "b2");
+        // Publication precedes cache persistence; wait for the full single-flight to settle.
+        await WaitForTrueAsync(() => !coordinator.GetDisplayState(ProviderId.Ark).Refreshing, TimeSpan.FromSeconds(10), "previous refresh settled");
         ClearManualGate();
-        coordinator.RequestManualRefresh(ProviderId.Ark);
+        Assert.True(coordinator.RequestManualRefresh(ProviderId.Ark));
         await WaitForTrueAsync(
             () => coordinator.GetDisplayState(ProviderId.Ark).LastGood?.Buckets.FirstOrDefault(b => b.SourceKey == "b1")?.Windows[0].RemainingPercent == 70,
             TimeSpan.FromSeconds(10), "merged partial snapshot");

@@ -10,32 +10,21 @@ using OBDim.Services;
 namespace OBDim.UI;
 
 /// <summary>
-/// The "Usage &amp; Memory" popover: a borderless panel anchored to its tray icon — the
-/// macOS menu-bar-popover interaction the user asked for (2026-09-13 feedback). One
-/// instance at a time; closes on Esc, on losing activation (click outside), or via the
-/// tray menu / hotkey toggle. Closing the popover does NOT stop the coordinator —
-/// monitoring keeps running in the background; only app exit does.
-/// <para>
-/// Three views inside one panel: 额度 (quota cards), 内存 (memory stats + trend), 设置 —
-/// and the settings view holds the FULL app settings (screen-timeout modes, both hotkeys,
-/// autostart, language) plus the monitoring switches, per the user's request to merge the
-/// two settings pages. Keyboard: the global popover hotkey toggles the panel; Tab / ← / →
-/// switch 额度↔内存; 1/2/3 jump directly; Esc closes. Text fields take the keys first.
-/// </para>
+/// Reusable tray popover for quota and memory. Dismissal hides the window; app exit
+/// disposes it. SettingsRequested opens a separate persistent settings window.
+/// Hidden pages record dirty state without creating or updating metric controls.
 /// </summary>
 public sealed class MonitorForm : Form
 {
     private readonly MonitoringCoordinator _coordinator;
 
-    /// <summary>App-config access for the merged settings view. Null in tests (section hidden).</summary>
-    private readonly Func<AppConfig>? _appConfigGetter;
-    private readonly Func<AppConfig, bool>? _appConfigApplier;
-
     private readonly ToolTip _toolTip = new();
 
-    public enum View { Quota, Memory, Settings }
+    public enum View { Quota, Memory }
 
-    private View _currentView = View.Quota;
+    public event Action? SettingsRequested;
+
+    private View _currentView = (View)(-1);
 
     // Header controls
     private readonly Panel _header = new();
@@ -48,7 +37,6 @@ public sealed class MonitorForm : Form
     // Views
     private readonly FlowLayoutPanel _quotaView = new();
     private readonly Panel _memoryView = new();
-    private readonly Panel _settingsView = new();
 
     // Quota cards (one per provider)
     private readonly Dictionary<ProviderId, Panel> _cards = [];
@@ -72,9 +60,8 @@ public sealed class MonitorForm : Form
         string Title, string Percent, double? Fraction, Color? BarColor,
         string Right, bool Dimmed, bool Clickable = false,
         string Badge = "", Color? ValueColor = null,
-        bool SectionHeader = false, bool SeparatorAbove = false);
+        bool SectionHeader = false, bool SeparatorAbove = false, string Identity = "");
 
-    private readonly Dictionary<ProviderId, string> _cardSignatures = [];
     private readonly Dictionary<ProviderId, List<Control>> _cardRowControls = [];
 
     /// <summary>Provider logos shared by all card instances; loaded once, kept for the process lifetime.</summary>
@@ -107,21 +94,12 @@ public sealed class MonitorForm : Form
     private readonly MemoryTrendChart _trendChart = new();
     private readonly Button _taskManagerButton = new();
 
-    // Settings view controls
-    private readonly Dictionary<ProviderId, CheckBox> _enableChecks = [];
-    private readonly Dictionary<ProviderId, TextBox> _pathBoxes = [];
-    private readonly CheckBox _memoryCheck = new();
-    private readonly CheckBox _remindersCheck = new();
-    private readonly CheckBox _leftClickCheck = new();
-    private readonly HotkeyCaptureBox _switchHotkeyBox = new();
-    private readonly HotkeyCaptureBox _popoverHotkeyBox = new();
-    private readonly NumericUpDown _workAc = new();
-    private readonly NumericUpDown _workDc = new();
-    private readonly NumericUpDown _awayAc = new();
-    private readonly NumericUpDown _awayDc = new();
-    private readonly ComboBox _languageBox = new();
-    private readonly Button _saveButton = new();
-    private readonly Label _saveStatusLabel = new();
+    private readonly Font _tabRegularFont = new("Microsoft YaHei UI", 13.5F);
+    private readonly Font _tabBoldFont = new("Microsoft YaHei UI", 13.5F, FontStyle.Bold);
+    private readonly Font _rowHeadingFont = new("Microsoft YaHei UI", 9F, FontStyle.Bold);
+    private readonly Font _timeFont = new("Microsoft YaHei UI", 8F);
+    private readonly Font _badgeFont = new("Microsoft YaHei UI", 7.5F);
+    private readonly System.Windows.Forms.Timer _countdownTimer = new() { Interval = 30000 };
 
     // Palette lifted from the reference handoff (windows-quota-reference.html :root).
     private static readonly Color Accent = Color.FromArgb(0x14, 0x79, 0xFA);       // #1479fa
@@ -141,13 +119,9 @@ public sealed class MonitorForm : Form
     private static readonly Color UnlimitedBlue = Color.FromArgb(0x06, 0x73, 0xFF);// #0673ff
     private static readonly Color PageBack = Color.White;
 
-    public MonitorForm(MonitoringCoordinator coordinator,
-        Func<AppConfig>? appConfigGetter = null,
-        Func<AppConfig, bool>? appConfigApplier = null)
+    public MonitorForm(MonitoringCoordinator coordinator)
     {
         _coordinator = coordinator;
-        _appConfigGetter = appConfigGetter;
-        _appConfigApplier = appConfigApplier;
 
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
@@ -165,31 +139,19 @@ public sealed class MonitorForm : Form
         BuildHeader();
         BuildQuotaView();
         BuildMemoryView();
-        BuildSettingsView();
+        _quotaView.SizeChanged += (_, _) => OnQuotaChanged();
 
         // Dock priority: the fill views must sit EARLIER in the collection than the Top
         // header, so the header reserves its strip first and the views take the rest.
         Controls.Add(_quotaView);
         Controls.Add(_memoryView);
-        Controls.Add(_settingsView);
         Controls.Add(_header);
 
-        _coordinator.QuotaStateChanged += OnCoordinatorChanged;
-        _coordinator.MemoryStateChanged += OnCoordinatorChanged;
-        _coordinator.ReminderFired += OnReminderFired;
-
-        FormClosed += (_, _) =>
-        {
-            _coordinator.QuotaStateChanged -= OnCoordinatorChanged;
-            _coordinator.MemoryStateChanged -= OnCoordinatorChanged;
-            _coordinator.ReminderFired -= OnReminderFired;
-            _toolTip.Dispose();
-        };
-
+        _coordinator.QuotaStateChanged += OnQuotaChanged;
+        _coordinator.MemoryStateChanged += OnMemoryChanged;
+        _coordinator.SettingsApplied += OnSettingsChanged;
+        _countdownTimer.Tick += (_, _) => { if (_currentView == View.Quota) OnQuotaChanged(); };
         ApplyLocalization();
-        UpdateQuotaView();
-        UpdateMemoryView();
-        LoadSettingsFromCoordinator();
 
         // The three docked views stack; without this the LAST one (settings) renders on
         // top and the popover opens on the wrong page.
@@ -225,11 +187,12 @@ public sealed class MonitorForm : Form
         try
         {
             const int dwmwaWindowCornerPreference = 33;
-            const int dwmwcpRounded = 33;
+            const int dwmwcpRounded = 2;
             var preference = dwmwcpRounded;
-            DwmSetWindowAttribute(Handle, dwmwaWindowCornerPreference, ref preference, sizeof(int));
+            var result = DwmSetWindowAttribute(Handle, dwmwaWindowCornerPreference, ref preference, sizeof(int));
+            if (result < 0) Debug.WriteLine($"Window corners unavailable: HRESULT 0x{result:X8}");
         }
-        catch (DllNotFoundException)
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
         {
             // pre-Win11 without dwmapi export — square corners are fine.
         }
@@ -239,7 +202,7 @@ public sealed class MonitorForm : Form
     {
         if (e.KeyCode == Keys.Escape)
         {
-            Close();
+            Hide();
             e.Handled = true;
         }
         base.OnKeyDown(e);
@@ -259,7 +222,7 @@ public sealed class MonitorForm : Form
         if (Visible)
         {
             LastDeactivateClosedAtUtc = DateTimeOffset.UtcNow;
-            Close();
+            Hide();
         }
     }
 
@@ -273,7 +236,7 @@ public sealed class MonitorForm : Form
         {
             switch (keyData)
             {
-                case Keys.Tab or Keys.Right or Keys.Left when _currentView != View.Settings:
+                case Keys.Tab or Keys.Right or Keys.Left:
                     SetView(_currentView == View.Quota ? View.Memory : View.Quota);
                     return true;
                 case Keys.D1 or Keys.NumPad1:
@@ -283,7 +246,7 @@ public sealed class MonitorForm : Form
                     SetView(View.Memory);
                     return true;
                 case Keys.D3 or Keys.NumPad3:
-                    SetView(View.Settings);
+                    SettingsRequested?.Invoke();
                     return true;
             }
         }
@@ -307,13 +270,37 @@ public sealed class MonitorForm : Form
         Show();
         Activate();
 
-        // Data may have arrived while the popover had no handle; without this the panel
-        // would show whatever the constructor rendered (possibly minutes old).
-        if (_staleWhileHidden)
+        RefreshVisibleView();
+    }
+
+    protected override void OnVisibleChanged(EventArgs e)
+    {
+        base.OnVisibleChanged(e);
+        Volatile.Write(ref _visibleView, Visible ? (int)_currentView : -1);
+        if (Visible)
         {
-            _staleWhileHidden = false;
-            UpdateQuotaView();
-            UpdateMemoryView();
+            Interlocked.Exchange(ref _quotaDirty, 1);
+            Interlocked.Exchange(ref _memoryDirty, 1);
+            RefreshVisibleView(); _countdownTimer.Start();
+        }
+        else _countdownTimer.Stop();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _coordinator.QuotaStateChanged -= OnQuotaChanged;
+            _coordinator.MemoryStateChanged -= OnMemoryChanged;
+            _coordinator.SettingsApplied -= OnSettingsChanged;
+            _countdownTimer.Dispose();
+            _toolTip.Dispose();
+        }
+        base.Dispose(disposing);
+        if (disposing)
+        {
+            _tabRegularFont.Dispose(); _tabBoldFont.Dispose(); _rowHeadingFont.Dispose();
+            _timeFont.Dispose(); _badgeFont.Dispose();
         }
     }
 
@@ -459,7 +446,7 @@ public sealed class MonitorForm : Form
         _settingsButton.BackColor = PageBack;
         _settingsButton.Font = new Font("Segoe UI Symbol", 11F);
         _settingsButton.Cursor = Cursors.Hand;
-        _settingsButton.Click += (_, _) => SetView(View.Settings);
+        _settingsButton.Click += (_, _) => SettingsRequested?.Invoke();
         _settingsButton.AccessibleName = L("monitor.settings");
         _toolTip.SetToolTip(_settingsButton, L("monitor.settings"));
 
@@ -483,27 +470,18 @@ public sealed class MonitorForm : Form
 
     public void SetView(View view)
     {
+        if (_currentView == view) return;
         _currentView = view;
+        if (view == View.Quota) Interlocked.Exchange(ref _quotaDirty, 1);
         _quotaView.Visible = view == View.Quota;
         _memoryView.Visible = view == View.Memory;
-        _settingsView.Visible = view == View.Settings;
-
-        StyleSegment(_quotaSegment, view == View.Quota);
-        StyleSegment(_memorySegment, view == View.Memory);
-        _settingsButton.Text = view == View.Settings ? "✕" : "⚙";
-
-        if (view == View.Quota) UpdateQuotaView();
-        if (view == View.Memory) UpdateMemoryView();
-        if (view == View.Settings) LoadSettingsFromCoordinator();
-    }
-
-    private void StyleSegment(Button segment, bool selected)
-    {
-        // Reference tabs: 18px text, bold + dark when selected, muted otherwise; the
-        // 3px accent underline marks the active tab and hides on the settings view.
-        segment.Font = new Font("Microsoft YaHei UI", 13.5F, selected ? FontStyle.Bold : FontStyle.Regular);
-        segment.ForeColor = selected ? TextStrong : TextSecondary;
+        _quotaSegment.Font = view == View.Quota ? _tabBoldFont : _tabRegularFont;
+        _memorySegment.Font = view == View.Memory ? _tabBoldFont : _tabRegularFont;
+        _quotaSegment.ForeColor = view == View.Quota ? TextStrong : TextSecondary;
+        _memorySegment.ForeColor = view == View.Memory ? TextStrong : TextSecondary;
         LayoutTabs();
+        Volatile.Write(ref _visibleView, Visible ? (int)view : -1);
+        RefreshVisibleView();
     }
 
     /// <summary>Positions the two text tabs and the accent underline from the CURRENT text
@@ -520,11 +498,6 @@ public sealed class MonitorForm : Form
         _quotaSegment.SetBounds(S(19), y, quotaWidth, tabHeight);
         _memorySegment.SetBounds(S(19) + quotaWidth + S(24), y, memoryWidth, tabHeight);
 
-        if (_currentView == View.Settings)
-        {
-            _quotaUnderline.Visible = false;
-            return;
-        }
         var selected = _currentView == View.Memory ? _memorySegment : _quotaSegment;
         _quotaUnderline.SetBounds(selected.Left, _header.Height - S(5), selected.Width, S(3));
         _quotaUnderline.Visible = true;
@@ -631,67 +604,64 @@ public sealed class MonitorForm : Form
         }
     }
 
-    /// Coalesces coordinator events: several may fire within one UI cycle (three
-    /// providers finishing together), and each one previously triggered a FULL rebuild of
-    /// every card — the direct cause of the multi-second stalls on click/tab switches.
-    /// <para>
-    /// Two failure modes this flag must NOT have (both are what a naive bool would give):
-    /// events arrive on coordinator threads, so the flag is set with <see cref="Interlocked"/>;
-    /// and every exit path — including a disposed form or a <c>BeginInvoke</c> that throws
-    /// because the handle died — resets it. A flag left stuck at "pending" silently
-    /// disables ALL future refreshes.
-    /// </para>
-    /// </summary>
     private int _pendingUiRefresh;
+    private int _quotaDirty = 1;
+    private int _memoryDirty = 1;
+    private int _localizationDirty;
+    private int _visibleView = -1;
 
-    /// <summary>Data changed while the popover had no window handle; forces one repaint on next open.</summary>
-    private bool _staleWhileHidden;
-
-    private void OnCoordinatorChanged()
+    private void OnQuotaChanged()
     {
-        if (IsDisposed) return;
-        if (Interlocked.Exchange(ref _pendingUiRefresh, 1) == 1) return;
+        Interlocked.Exchange(ref _quotaDirty, 1);
+        if (Volatile.Read(ref _visibleView) == (int)View.Quota) QueueUiRefresh();
+    }
 
-        if (!IsHandleCreated)
-        {
-            // Nothing is on screen to paint, but the data DID move — remember it so the
-            // next open does not show whatever the constructor rendered.
-            _staleWhileHidden = true;
-            Interlocked.Exchange(ref _pendingUiRefresh, 0);
-            return;
-        }
+    private void OnMemoryChanged()
+    {
+        Interlocked.Exchange(ref _memoryDirty, 1);
+        if (Volatile.Read(ref _visibleView) == (int)View.Memory) QueueUiRefresh();
+    }
 
+    private void OnSettingsChanged()
+    {
+        Interlocked.Exchange(ref _localizationDirty, 1);
+        Interlocked.Exchange(ref _quotaDirty, 1);
+        Interlocked.Exchange(ref _memoryDirty, 1);
+        QueueUiRefresh();
+    }
+
+    private void QueueUiRefresh()
+    {
+        if (IsDisposed || !IsHandleCreated || Volatile.Read(ref _visibleView) < 0) return;
+        if (Interlocked.Exchange(ref _pendingUiRefresh, 1) != 0) return;
         try
         {
             BeginInvoke(() =>
             {
-                try
-                {
-                    if (IsDisposed) return;
-                    UpdateQuotaView();
-                    if (_currentView == View.Memory) UpdateMemoryView();
-                }
-                finally
-                {
-                    Interlocked.Exchange(ref _pendingUiRefresh, 0);
-                }
+                // Release before reading dirty flags. An event during rendering posts
+                // another pass, instead of being swallowed by the coalescing gate.
+                Interlocked.Exchange(ref _pendingUiRefresh, 0);
+                if (!IsDisposed) RefreshVisibleView();
             });
         }
-        catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException)
-        {
-            // The handle died between the check and the post; never leave the gate closed.
-            Interlocked.Exchange(ref _pendingUiRefresh, 0);
-        }
+        catch (InvalidOperationException) { Interlocked.Exchange(ref _pendingUiRefresh, 0); }
     }
 
-    private void OnReminderFired(QuotaReminderEvent evt)
+    private void RefreshVisibleView()
     {
-        // Reminders surface as tray balloons (owned by TrayApp); the panel just refreshes.
-        OnCoordinatorChanged();
+        if (!Visible || IsDisposed) return;
+        if (Interlocked.Exchange(ref _localizationDirty, 0) != 0) ApplyLocalization();
+        if (_currentView == View.Quota && Interlocked.Exchange(ref _quotaDirty, 0) != 0) UpdateQuotaView();
+        if (_currentView == View.Memory && Interlocked.Exchange(ref _memoryDirty, 0) != 0) UpdateMemoryView();
     }
+
+    internal int QuotaRefreshCount { get; private set; }
+    internal int RowsCreated { get; private set; }
+    internal int RowsDisposed { get; private set; }
 
     private void UpdateQuotaView()
     {
+        QuotaRefreshCount++;
         if (IsDisposed) return;
         var cardWidth = Math.Max(200, _quotaView.ClientSize.Width - _quotaView.Padding.Horizontal);
         foreach (var id in Enum.GetValues<ProviderId>())
@@ -788,6 +758,7 @@ public sealed class MonitorForm : Form
         {
             foreach (var bucket in snapshot.Buckets)
             {
+                if (!_coordinator.Settings.IsProductVisible(state.Provider, bucket.SourceKey)) continue;
                 if (state.Provider == ProviderId.Ark)
                 {
                     // Product level lives HERE — "Coding Plan [Pro]" as a full-width
@@ -795,25 +766,25 @@ public sealed class MonitorForm : Form
                     // name, never flattened into a window row.
                     rows.Add(new RowDesc(ArkProductDisplay(bucket), "", null, null, "",
                         dimmed, Badge: bucket.Tier is { } productTier ? TierDisplay(productTier) : "",
-                        SectionHeader: true));
+                        SectionHeader: true, Identity: $"product:{bucket.SourceKey}"));
                 }
 
                 if (bucket.Error is not null)
                 {
                     rows.Add(MetricRow(bucket.DisplayName ?? bucket.SourceKey, L("monitor.bucket_error"),
-                        "", null, null, "", true));
+                        "", null, null, "", true) with { Identity = $"status:{bucket.SourceKey}" });
                     continue;
                 }
                 if (bucket.Subscribed == false)
                 {
                     rows.Add(MetricRow(bucket.DisplayName ?? bucket.SourceKey, L("monitor.no_subscription"),
-                        "", null, null, "", true));
+                        "", null, null, "", true) with { Identity = $"status:{bucket.SourceKey}" });
                     continue;
                 }
                 if (bucket.Windows.Count == 0)
                 {
                     rows.Add(MetricRow(bucket.DisplayName ?? bucket.SourceKey, L("monitor.not_returned"),
-                        "", null, null, "", true));
+                        "", null, null, "", true) with { Identity = $"status:{bucket.SourceKey}" });
                     continue;
                 }
 
@@ -891,7 +862,7 @@ public sealed class MonitorForm : Form
                     }
 
                     rows.Add(MetricRow(rowTitle, percentText, rowBadge, fraction, barColor,
-                        ResetText(window), dimmed, valueColor));
+                        ResetText(window), dimmed, valueColor) with { Identity = $"metric:{bucket.SourceKey}\0{window.SourceKey}" });
                 }
             }
 
@@ -913,7 +884,7 @@ public sealed class MonitorForm : Form
                     null, null,
                     nextExpiry?.ExpiresAtUtc is { } exp ? $"{exp.ToLocalTime():M/d HH:mm} " + L("monitor.credit_expiry_suffix") : "—",
                     dimmed, Clickable: true,
-                    Badge: creditsTitle == L("monitor.badge.reset_credit") ? "" : L("monitor.badge.reset_credit")));
+                    Badge: creditsTitle == L("monitor.badge.reset_credit") ? "" : L("monitor.badge.reset_credit"), Identity: "credits"));
 
                 if (credits.Details is null)
                 {
@@ -937,6 +908,9 @@ public sealed class MonitorForm : Form
                 }
             }
         }
+
+        for (var i = 0; i < rows.Count; i++)
+            if (rows[i].Identity.Length == 0) rows[i] = rows[i] with { Identity = $"detail:{i}" };
 
         // Separators: a metric row that directly follows another metric row gets the
         // 1px top hairline (reference .metric+.metric:before). Section headers and the
@@ -968,62 +942,64 @@ public sealed class MonitorForm : Form
     /// </summary>
     private void ApplyCardRows(ProviderId id, FlowLayoutPanel rowsPanel, List<RowDesc> rows)
     {
-        // Clickable is part of the signature: it decides whether the row gets a click
-        // handler, and an in-place refresh never touches handlers — a row that becomes
-        // clickable (or stops being one) MUST be rebuilt, not refreshed in place.
-        // Badge/ValueColor/SectionHeader/SeparatorAbove decide STRUCTURE, so they are in
-        // the signature too; a differing title/value/rebuilds via the same rule.
-        var signature = string.Join("|", rows.Select(r =>
-            $"{r.Title}#{r.Percent}#{r.Fraction}#{r.BarColor}#{r.Right}#{r.Dimmed}#{r.Clickable}#{r.Badge}#{r.ValueColor}#{r.SectionHeader}#{r.SeparatorAbove}"));
-
-        if (_cardSignatures.TryGetValue(id, out var previous) &&
-            previous == signature &&
-            _cardRowControls.TryGetValue(id, out var existing) &&
-            existing.Count == rows.Count)
-        {
-            for (var i = 0; i < rows.Count; i++)
-            {
-                UpdateRowInPlace(existing[i], rows[i]);
-            }
-            return;
-        }
-
-        _cardSignatures[id] = signature;
-        ClearRows(rowsPanel);
-        var controls = new List<Control>(rows.Count);
+        var existing = _cardRowControls.GetValueOrDefault(id) ?? [];
+        var remaining = existing.ToList();
+        var next = new List<Control>(rows.Count);
+        _quotaView.SuspendLayout();
         rowsPanel.SuspendLayout();
-        foreach (var desc in rows)
+        try
         {
-            var row = AddRow(rowsPanel, desc);
-            if (desc.Clickable) MakeClickable(row, ToggleCreditsExpansion);
-            controls.Add(row);
+            foreach (var desc in rows)
+            {
+                var row = remaining.FirstOrDefault(c => c.Tag is RowDesc old
+                    && old.Identity == desc.Identity && old.SectionHeader == desc.SectionHeader
+                    && old.Clickable == desc.Clickable);
+                if (row is null)
+                {
+                    row = AddRow(rowsPanel, desc);
+                    if (desc.Clickable) MakeClickable(row, ToggleCreditsExpansion);
+                }
+                else remaining.Remove(row);
+                UpdateRowInPlace(row, desc);
+                if (row.Width != rowsPanel.Width) row.Width = rowsPanel.Width;
+                LayoutRow(row, desc);
+                next.Add(row);
+            }
+            foreach (var obsolete in remaining) { rowsPanel.Controls.Remove(obsolete); obsolete.Dispose(); RowsDisposed++; }
+            for (var i = 0; i < next.Count; i++)
+                if (rowsPanel.Controls.GetChildIndex(next[i]) != i) rowsPanel.Controls.SetChildIndex(next[i], i);
+            _cardRowControls[id] = next;
         }
-        rowsPanel.ResumeLayout(true);
-        _cardRowControls[id] = controls;
+        finally { rowsPanel.ResumeLayout(true); _quotaView.ResumeLayout(true); }
     }
 
-    private static void UpdateRowInPlace(Control row, RowDesc desc)
+    private void UpdateRowInPlace(Control row, RowDesc desc)
     {
+        if (row.Tag is RowDesc old && old.SeparatorAbove != desc.SeparatorAbove) row.Invalidate();
+        row.Tag = desc;
         foreach (Control child in row.Controls)
         {
             switch (child.Tag)
             {
-                case "t" when child.Text != desc.Title:
+                case "t":
                     child.Text = desc.Title;
+                    child.ForeColor = desc.Dimmed ? TextSecondary : desc.SectionHeader ? TextStrong : TextPrimary;
                     break;
-                case "p" when child.Text != desc.Percent:
+                case "p":
                     child.Text = desc.Percent;
+                    child.ForeColor = desc.Dimmed ? TextSecondary : desc.ValueColor ?? TextPrimary;
+                    child.Visible = desc.Percent.Length > 0;
                     break;
-                case "r" when child.Text != desc.Right:
-                    child.Text = desc.Right;
+                case "r": child.Text = desc.Right; child.Visible = desc.Right.Length > 0; break;
+                case "badge":
+                    child.Text = desc.Badge;
+                    child.ForeColor = desc.Dimmed ? TextSecondary : BadgeText;
+                    child.Visible = desc.Badge.Length > 0;
                     break;
                 case "b" when child is QuotaBar bar:
-                    if (Math.Abs(bar.Fraction - (desc.Fraction ?? 0)) > 0.0001) bar.Fraction = desc.Fraction ?? 0;
-                    if (desc.BarColor is { } color && bar.FillColor != color)
-                    {
-                        bar.FillColor = color;
-                        bar.Invalidate();
-                    }
+                    bar.Fraction = desc.Fraction ?? 0;
+                    bar.FillColor = desc.Dimmed ? TextSecondary : desc.BarColor ?? BarGreen;
+                    bar.Visible = desc.Fraction.HasValue && desc.BarColor.HasValue;
                     break;
             }
         }
@@ -1057,13 +1033,6 @@ public sealed class MonitorForm : Form
     {
         _creditsExpanded = !_creditsExpanded;
         UpdateQuotaView();
-    }
-
-    private static void ClearRows(FlowLayoutPanel rowsPanel)
-    {
-        var old = rowsPanel.Controls.OfType<Control>().ToList();
-        rowsPanel.Controls.Clear();
-        foreach (var c in old) c.Dispose();
     }
 
     /// <summary>
@@ -1162,178 +1131,71 @@ public sealed class MonitorForm : Form
     /// </summary>
     private Control AddRow(FlowLayoutPanel rowsPanel, RowDesc desc)
     {
-        var rowWidth = Math.Max(200, rowsPanel.Width);
-
-        if (desc.SectionHeader)
+        RowsCreated++;
+        var row = new Panel { Width = rowsPanel.Width, Margin = new Padding(0),
+            BackColor = desc.SectionHeader ? SectionBack : Color.White, Tag = desc };
+        row.Paint += (_, e) =>
         {
-            // Product strip ("Coding Plan [Pro]"): full card width, light gray, 36 high.
-            var strip = new Panel
+            if (row.Tag is RowDesc { SeparatorAbove: true })
             {
-                Width = rowWidth,
-                Height = S(36),
-                Margin = new Padding(0),
-                BackColor = SectionBack,
-            };
-            var labelFont = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold);
-            var labelWidth = TextRenderer.MeasureText(desc.Title, labelFont).Width;
-            var label = new Label
-            {
-                Text = desc.Title,
-                Tag = "t",
-                AutoSize = false,
-                AutoEllipsis = true,
-                BackColor = SectionBack,
-                ForeColor = TextStrong,
-                Font = labelFont,
-                Location = new Point(S(13), (S(36) - S(20)) / 2),
-                Size = new Size(Math.Min(labelWidth + 2, rowWidth - 2 * S(13)), S(20)),
-            };
-            strip.Controls.Add(label);
-            if (desc.Badge.Length > 0)
-            {
-                var productBadge = NewRowBadge(desc.Badge);
-                productBadge.Left = Math.Min(label.Right + S(8), rowWidth - S(13) - productBadge.Width);
-                productBadge.Top = (S(36) - productBadge.Height) / 2;
-                strip.Controls.Add(productBadge);
+                using var pen = new Pen(Hairline);
+                e.Graphics.DrawLine(pen, S(13), 0, row.Width - S(13), 0);
             }
-            rowsPanel.Controls.Add(strip);
-            return strip;
-        }
-
-        var hasBar = desc.Fraction is { } && desc.BarColor is { };
-        var rowHeight = hasBar ? S(54) : S(40);
-        var row = new Panel
-        {
-            Width = rowWidth,
-            Height = rowHeight,
-            Margin = new Padding(0),
-            BackColor = Color.White,
         };
-        if (desc.SeparatorAbove)
+        row.SizeChanged += (_, _) => { if (row.Tag is RowDesc value) LayoutRow(row, value); };
+        row.Controls.Add(new Label { Tag = "t", AutoEllipsis = true,
+            Font = desc.SectionHeader ? _rowHeadingFont : Font, BackColor = row.BackColor });
+        row.Controls.Add(new BadgeLabel { Tag = "badge", Font = _badgeFont, BackColor = row.BackColor });
+        if (!desc.SectionHeader)
         {
-            var separatorPen = new Pen(Hairline);
-            row.Paint += (_, e) => e.Graphics.DrawLine(separatorPen, S(13), 0, rowWidth, 0);
-            row.Disposed += (_, _) => separatorPen.Dispose();
+            row.Controls.Add(new Label { Tag = "p", AutoEllipsis = true, BackColor = row.BackColor });
+            row.Controls.Add(new Label { Tag = "r", AutoEllipsis = true, BackColor = row.BackColor,
+                ForeColor = TextSecondary, TextAlign = ContentAlignment.MiddleRight, Font = _timeFont });
+            row.Controls.Add(new QuotaBar { Tag = "b", BackColor = row.BackColor });
         }
-
-        // Reference column geometry over the content width (row minus the 13-logical
-        // side insets): 144 name / flexible value / 106 time, 12-logical gaps.
-        var inset = S(13);
-        var contentWidth = rowWidth - 2 * inset;
-        var nameWidth = (int)Math.Round(contentWidth * (144.0 / 482.0));
-        var rightWidth = (int)Math.Round(contentWidth * (106.0 / 482.0));
-        var gap = S(12);
-        var valueX = inset + nameWidth + gap;
-        var valueWidth = Math.Max(S(60), contentWidth - nameWidth - rightWidth - 2 * gap);
-        var rightX = rowWidth - inset - rightWidth;
-        var lineHeight = S(20);
-
-        // Title + window badge share the name column: the badge sits right after the
-        // measured text when both fit; otherwise the title ellipsizes and the badge
-        // docks at the column end ("Codex Spa…" is exactly what we must NOT ship).
-        // The +6 slack covers Label's internal padding — without it a text that fits
-        // its measure exactly still ellipsizes. Rows with NO badge, value and time
-        // (expanded credit details) are single full-width lines instead.
-        var measuredTitle = TextRenderer.MeasureText(desc.Title, Font).Width;
-        var fullLineRow = desc.Badge.Length == 0 && desc.Percent.Length == 0 && desc.Right.Length == 0;
-        var rowBadge = desc.Badge.Length > 0 ? NewRowBadge(desc.Badge) : null;
-        var badgeGap = S(6); // reference .metric-label gap: 6 — tighter than the column gap
-        var badgeSpace = rowBadge is null ? 0 : rowBadge.Width + badgeGap;
-        var titleAvailable = fullLineRow
-            ? contentWidth
-            : Math.Max(lineHeight, nameWidth - badgeSpace);
-        var titleLabel = new Label
-        {
-            Text = desc.Title,
-            Tag = "t",
-            AutoSize = false,
-            AutoEllipsis = !fullLineRow,
-            BackColor = row.BackColor,
-            ForeColor = desc.Dimmed ? TextSecondary : TextPrimary,
-        };
-        var titleY = (rowHeight - lineHeight) / 2;
-        titleLabel.SetBounds(inset, titleY, Math.Min(measuredTitle + S(8), titleAvailable), lineHeight);
-        row.Controls.Add(titleLabel);
-        if (rowBadge is not null)
-        {
-            rowBadge.Left = measuredTitle <= titleAvailable
-                ? Math.Min(titleLabel.Right + badgeGap, inset + nameWidth - rowBadge.Width)
-                : inset + nameWidth - rowBadge.Width;
-            rowBadge.Top = (rowHeight - rowBadge.Height) / 2;
-            row.Controls.Add(rowBadge);
-        }
-
-        // VALUE column: text on the first line, 7px bar underneath — or a single
-        // vertically centered line for compact rows (unlimited, counts, credits).
-        // Empty labels are not added at all: a painted white rectangle would sit ON
-        // TOP of a full-width title and erase its tail.
-        var valueLabel = new Label
-        {
-            Text = desc.Percent,
-            Tag = "p",
-            AutoSize = false,
-            AutoEllipsis = true,
-            BackColor = row.BackColor,
-            ForeColor = desc.ValueColor ?? (desc.Dimmed ? TextSecondary : TextPrimary),
-        };
-        if (hasBar)
-        {
-            valueLabel.SetBounds(valueX, S(12), valueWidth, S(18));
-            row.Controls.Add(valueLabel);
-
-            var bar = new QuotaBar
-            {
-                Tag = "b",
-                Fraction = desc.Fraction ?? 0,
-                FillColor = desc.BarColor ?? BarGreen,
-                BackColor = row.BackColor,
-            };
-            bar.SetBounds(valueX, S(35), valueWidth, S(7));
-            row.Controls.Add(bar);
-        }
-        else if (desc.Percent.Length > 0)
-        {
-            valueLabel.SetBounds(valueX, (rowHeight - lineHeight) / 2, valueWidth, lineHeight);
-            row.Controls.Add(valueLabel);
-        }
-
-        if (desc.Right.Length > 0)
-        {
-            var rightLabel = new Label
-            {
-                Text = desc.Right,
-                Tag = "r",
-                AutoSize = false,
-                AutoEllipsis = true,
-                TextAlign = ContentAlignment.MiddleRight,
-                BackColor = row.BackColor,
-                ForeColor = TextSecondary,
-                Font = new Font("Microsoft YaHei UI", 8F),
-            };
-            rightLabel.SetBounds(rightX, (rowHeight - lineHeight) / 2, rightWidth, lineHeight);
-            row.Controls.Add(rightLabel);
-        }
-
         rowsPanel.Controls.Add(row);
         return row;
     }
 
-    /// <summary>Window badge for a metric row — smaller type than the header tier badge.</summary>
-    private BadgeLabel NewRowBadge(string text)
+    private void LayoutRow(Control row, RowDesc desc)
     {
-        var badge = new BadgeLabel { Font = new Font("Microsoft YaHei UI", 7.5F) };
-        badge.Text = text;
-        badge.FitToText();
+        var title = row.Controls.Cast<Control>().First(c => Equals(c.Tag, "t"));
+        var badge = (BadgeLabel)row.Controls.Cast<Control>().First(c => Equals(c.Tag, "badge"));
+        var hasBadge = desc.Badge.Length > 0;
+        var inset = S(13);
+        var contentWidth = Math.Max(S(80), row.Width - 2 * inset);
+        var hasBar = desc.Fraction.HasValue && desc.BarColor.HasValue;
+        var height = S(desc.SectionHeader ? 36 : hasBar ? 54 : 40);
+        if (row.Height != height) row.Height = height;
         badge.Height = S(18);
-        return badge;
+        var measured = TextRenderer.MeasureText(desc.Title, title.Font).Width + S(8);
+        if (desc.SectionHeader)
+        {
+            title.SetBounds(inset, (height-S(20))/2,
+                Math.Min(measured, Math.Max(S(20), contentWidth - (hasBadge ? badge.Width+S(8) : 0))), S(20));
+            badge.Location = new Point(title.Right+S(8), (height-badge.Height)/2);
+            return;
+        }
+        var nameWidth = (int)Math.Round(contentWidth * (144.0/482.0));
+        var rightWidth = (int)Math.Round(contentWidth * (106.0/482.0));
+        var fullLine = !hasBadge && desc.Percent.Length == 0 && desc.Right.Length == 0;
+        var titleAvailable = fullLine ? contentWidth : Math.Max(S(20), nameWidth - (hasBadge ? badge.Width+S(6) : 0));
+        title.SetBounds(inset, (height-S(20))/2, Math.Min(measured, titleAvailable), S(20));
+        badge.Location = new Point(Math.Min(title.Right+S(6), inset+nameWidth-badge.Width), (height-badge.Height)/2);
+        var valueX = inset + nameWidth + S(12);
+        var valueWidth = Math.Max(S(40), contentWidth-nameWidth-rightWidth-2*S(12));
+        foreach (Control child in row.Controls)
+        {
+            if (Equals(child.Tag, "p")) child.SetBounds(valueX, hasBar ? S(12) : (height-S(20))/2, valueWidth, S(20));
+            if (Equals(child.Tag, "r")) child.SetBounds(row.Width-inset-rightWidth, (height-S(20))/2, rightWidth, S(20));
+            if (Equals(child.Tag, "b")) child.SetBounds(valueX, S(35), valueWidth, S(7));
+        }
     }
 
     private void SizeCard(Panel card, FlowLayoutPanel rowsPanel)
     {
-        // Force the flow panel to lay out NOW so its Height reflects the fresh rows —
-        // reading it before layout returns the stale (too tall/short) value.
-        rowsPanel.PerformLayout();
-        card.Height = rowsPanel.Location.Y + rowsPanel.Height + S(12);
+        var height = rowsPanel.Top + rowsPanel.Controls.Cast<Control>().Sum(c => c.Height + c.Margin.Vertical) + S(12);
+        if (card.Height != height) card.Height = height;
     }
 
     private static string ResetText(QuotaWindow window)
@@ -1528,267 +1390,6 @@ public sealed class MonitorForm : Form
 
     // ---------- settings view ----------
 
-    private void BuildSettingsView()
-    {
-        // TableLayoutPanel with AutoSize rows — the previous hand-computed y offsets
-        // broke under DPI scaling (controls overlapped/vanished on a real 150% machine).
-        _settingsView.Dock = DockStyle.Fill;
-        _settingsView.Padding = new Padding(12, 6, 12, 12);
-        _settingsView.BackColor = PageBack;
-
-        var card = new CardPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Color.White,
-            Padding = new Padding(14, 12, 14, 12),
-        };
-
-        var scroll = new Panel
-        {
-            AutoScroll = true,
-            Dock = DockStyle.Fill,
-            BackColor = Color.White,
-        };
-
-        var layout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Top,
-            AutoSize = true,
-            ColumnCount = 1,
-            BackColor = Color.White,
-            Margin = new Padding(0),
-        };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-
-        var rowIndex = 0;
-        void AddRow(Control c, int topMargin = 0, int bottomMargin = 6, int leftIndent = 0)
-        {
-            c.Margin = new Padding(leftIndent, topMargin, 0, bottomMargin);
-            c.AutoSize = true;
-            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            layout.Controls.Add(c, 0, rowIndex++);
-        }
-
-        Label Section(string key)
-        {
-            var label = new Label
-            {
-                Text = L(key),
-                AutoSize = true,
-                Font = new Font(Font, FontStyle.Bold),
-                ForeColor = SystemColors.ControlText,
-            };
-            AddRow(label, topMargin: 8, bottomMargin: 2);
-            return label;
-        }
-
-        FlowLayoutPanel RowOf(params Control[] items)
-        {
-            var flow = new FlowLayoutPanel
-            {
-                FlowDirection = FlowDirection.LeftToRight,
-                WrapContents = false,
-                AutoSize = true,
-                Margin = new Padding(0, 0, 0, 6),
-            };
-            foreach (var item in items) flow.Controls.Add(item);
-            return flow;
-        }
-
-        // —— 息屏模式（原 OB Dim 设置） ——
-        Section("monitor.settings.group_screen");
-        AddRow(new Label { Text = L("settings.work_mode"), AutoSize = true }, bottomMargin: 2);
-
-        foreach (var nud in new[] { _workAc, _workDc, _awayAc, _awayDc })
-        {
-            nud.Width = 64;
-            nud.Minimum = 0;
-            nud.Maximum = 99999;
-        }
-        AddRow(RowOf(_workAc, _workDc));
-
-        AddRow(new Label { Text = L("settings.away_mode"), AutoSize = true }, bottomMargin: 2);
-        AddRow(RowOf(_awayAc, _awayDc));
-
-        // —— 热键 ——
-        Section("monitor.settings.group_hotkeys");
-        AddRow(new Label { Text = L("settings.hotkey_label"), AutoSize = true }, bottomMargin: 2);
-        _switchHotkeyBox.Width = 200;
-        _switchHotkeyBox.ReadOnly = true;
-        AddRow(_switchHotkeyBox, bottomMargin: 4);
-
-        AddRow(new Label { Text = L("monitor.settings.popover_hotkey"), AutoSize = true }, bottomMargin: 2);
-        _popoverHotkeyBox.Width = 200;
-        _popoverHotkeyBox.ReadOnly = true;
-        AddRow(_popoverHotkeyBox, bottomMargin: 2);
-
-        AddRow(new Label
-        {
-            Text = L("settings.win_note"),
-            AutoSize = true,
-            ForeColor = TextSecondary,
-            Font = new Font(Font.FontFamily, 7.5F),
-        }, bottomMargin: 2);
-
-        _leftClickCheck.AutoSize = true;
-        AddRow(_leftClickCheck, topMargin: 4);
-
-        // —— 通用 ——
-        // Language sits at the TOP of the general group (2026-09-13 layout review).
-        Section("monitor.settings.group_general");
-        var languageLabel = new Label { Text = L("settings.language"), AutoSize = true, Margin = new Padding(0, 4, 8, 0) };
-        _languageBox.DropDownStyle = ComboBoxStyle.DropDownList;
-        _languageBox.Width = 110;
-        _languageBox.Items.AddRange(new object[] { "中文", "English" });
-        AddRow(RowOf(languageLabel, _languageBox));
-
-        _memoryCheck.AutoSize = true;
-        AddRow(_memoryCheck);
-
-        _autoStartCheck = new CheckBox { AutoSize = true, Text = L("settings.autostart") };
-        AddRow(_autoStartCheck);
-
-        // —— 监控 ——
-        Section("monitor.settings.group_monitoring");
-        _remindersCheck.AutoSize = true;
-        AddRow(_remindersCheck);
-
-        foreach (ProviderId id in Enum.GetValues<ProviderId>())
-        {
-            var enable = new CheckBox
-            {
-                Name = $"enable_{id}",
-                AutoSize = true,
-                Text = L($"monitor.provider.{id.ToString().ToLowerInvariant()}"),
-            };
-            _enableChecks[id] = enable;
-            AddRow(enable, topMargin: 4, bottomMargin: 2);
-
-            var path = new TextBox
-            {
-                Name = $"cliPath_{id}",
-                Width = 340,
-                Margin = new Padding(20, 0, 0, 6),
-            };
-            _toolTip.SetToolTip(path, L("monitor.settings.cli_path"));
-            _pathBoxes[id] = path;
-            AddRow(path);
-        }
-
-        // —— 保存 ——
-        _saveButton.AutoSize = true;
-        _saveButton.MinimumSize = new Size(96, 0); // never a sliver of a click target
-        _saveButton.FlatStyle = FlatStyle.Flat;
-        _saveButton.FlatAppearance.BorderSize = 0;
-        _saveButton.BackColor = Accent;
-        _saveButton.ForeColor = Color.White;
-        _saveButton.Padding = new Padding(12, 2, 12, 2);
-        _saveButton.Cursor = Cursors.Hand;
-        _saveButton.Click += (_, _) => ApplySettingsFromView();
-        AddRow(_saveButton, topMargin: 8, bottomMargin: 0);
-
-        _saveStatusLabel.AutoSize = true;
-        _saveStatusLabel.ForeColor = TextSecondary;
-        _saveStatusLabel.Margin = new Padding(12, 8, 0, 0);
-        AddRow(_saveStatusLabel, bottomMargin: 0);
-
-        scroll.Controls.Add(layout);
-        card.Controls.Add(scroll);
-        _settingsView.Controls.Add(card);
-    }
-
-    private CheckBox _autoStartCheck = null!;
-
-    private void LoadSettingsFromCoordinator()
-    {
-        var settings = _coordinator.Settings;
-        foreach (ProviderId id in Enum.GetValues<ProviderId>())
-        {
-            var provider = settings.Provider(id);
-            _enableChecks[id].Checked = provider.Enabled;
-            _pathBoxes[id].Text = provider.CliPath ?? "";
-        }
-        _memoryCheck.Checked = settings.MemoryEnabled;
-        _remindersCheck.Checked = settings.RemindersEnabled;
-        _leftClickCheck.Checked = settings.LeftClickOpensPopover;
-        _popoverHotkeyBox.SetCaptured(
-            GlobalHotkeyService.ParseHotkeyString(settings.PopoverHotkey)
-            ?? GlobalHotkeyService.ParseHotkeyString("Ctrl+Alt+D")!);
-        _saveStatusLabel.Text = "";
-
-        if (_appConfigGetter is { } getter)
-        {
-            var appCfg = getter();
-            _workAc.Value = appCfg.Work.AcMinutes;
-            _workDc.Value = appCfg.Work.DcMinutes;
-            _awayAc.Value = appCfg.Away.AcMinutes;
-            _awayDc.Value = appCfg.Away.DcMinutes;
-            _switchHotkeyBox.SetCaptured(appCfg.Hotkey);
-            _autoStartCheck.Checked = appCfg.AutoStart;
-            _languageBox.SelectedIndex = appCfg.Language == "en-US" ? 1 : 0;
-        }
-        else
-        {
-            // Test/detached mode: the app-settings section is inert but must not LOOK
-            // broken — show the defaults instead of blanks.
-            foreach (var nud in new[] { _workAc, _workDc, _awayAc, _awayDc })
-            {
-                nud.Enabled = false;
-            }
-            _workAc.Value = 0;
-            _workDc.Value = 30;
-            _awayAc.Value = 1;
-            _awayDc.Value = 1;
-            _switchHotkeyBox.SetCaptured(new HotkeyConfig());
-            _switchHotkeyBox.Enabled = false;
-            _autoStartCheck.Checked = true;
-            _autoStartCheck.Enabled = false;
-            _languageBox.SelectedIndex = 0;
-            _languageBox.Enabled = false;
-        }
-    }
-
-    private void ApplySettingsFromView()
-    {
-        var popoverHotkey = $"{_popoverHotkeyBox.Captured.Modifiers}+{_popoverHotkeyBox.Captured.Key}";
-        var settings = _coordinator.Settings with
-        {
-            MemoryEnabled = _memoryCheck.Checked,
-            RemindersEnabled = _remindersCheck.Checked,
-            LeftClickOpensPopover = _leftClickCheck.Checked,
-            PopoverHotkey = popoverHotkey,
-            Providers = Enum.GetValues<ProviderId>().Select(id => new ProviderSettings
-            {
-                Id = id,
-                Enabled = _enableChecks[id].Checked,
-                CliPath = string.IsNullOrWhiteSpace(_pathBoxes[id].Text) ? null : _pathBoxes[id].Text.Trim(),
-            }).ToList(),
-        };
-
-        // Apply first so the views update even if a save fails (a failed save is reported,
-        // never faked — spec §8(6)). Monitoring settings and app settings persist
-        // independently (monitoring.json vs config.json).
-        _coordinator.ApplySettings(settings);
-        var monitoringSaved = _coordinator.SaveSettings(settings);
-
-        var appSaved = true;
-        if (_appConfigGetter is { } getter && _appConfigApplier is { } applier)
-        {
-            var current = getter();
-            var newCfg = current with
-            {
-                Work = new TimeoutConfig { AcMinutes = (int)_workAc.Value, DcMinutes = (int)_workDc.Value },
-                Away = new TimeoutConfig { AcMinutes = (int)_awayAc.Value, DcMinutes = (int)_awayDc.Value },
-                Hotkey = _switchHotkeyBox.Captured,
-                AutoStart = _autoStartCheck.Checked,
-                Language = _languageBox.SelectedIndex == 1 ? "en-US" : "zh-CN",
-            };
-            appSaved = applier(newCfg);
-        }
-
-        _saveStatusLabel.Text = monitoringSaved && appSaved ? L("monitor.saved") : L("monitor.settings.save_failed");
-    }
-
     // ---------- localization refresh ----------
 
     private void ApplyLocalization()
@@ -1799,10 +1400,6 @@ public sealed class MonitorForm : Form
         _refreshButton.Text = "⟳";
         _settingsButton.Text = "⚙";
         _taskManagerButton.Text = L("monitor.open_task_manager");
-        _saveButton.Text = L("monitor.settings.save");
-        _memoryCheck.Text = L("monitor.settings.memory");
-        _remindersCheck.Text = L("monitor.settings.reminders");
-        _leftClickCheck.Text = L("monitor.settings.left_click");
         _trendChart.Title = L("monitor.trend_title");
         _trendChart.SeriesNames = (L("monitor.trend_physical"), L("monitor.trend_commit"));
         _trendChart.EmptyText = L("monitor.trend_no_data");
@@ -1959,8 +1556,18 @@ public sealed class MonitorForm : Form
     /// <summary>A 6px rounded quota bar — the only "chart" a quota row needs.</summary>
     internal sealed class QuotaBar : Control
     {
-        public double Fraction { get; set; }
-        public Color FillColor { get; set; } = BarGreen;
+        private double _fraction;
+        private Color _fillColor = BarGreen;
+        public double Fraction
+        {
+            get => _fraction;
+            set { if (_fraction == value) return; _fraction = value; Invalidate(); }
+        }
+        public Color FillColor
+        {
+            get => _fillColor;
+            set { if (_fillColor == value) return; _fillColor = value; Invalidate(); }
+        }
 
         public QuotaBar()
         {
@@ -2028,7 +1635,7 @@ public sealed class MonitorForm : Form
             using var brush = new SolidBrush(BadgeBack);
             using var path = RoundedPath(rect, Math.Min(radius, rect.Height / 2));
             g.FillPath(brush, path);
-            TextRenderer.DrawText(g, Text, Font, rect, BadgeText,
+            TextRenderer.DrawText(g, Text, Font, rect, ForeColor,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
         }
 
