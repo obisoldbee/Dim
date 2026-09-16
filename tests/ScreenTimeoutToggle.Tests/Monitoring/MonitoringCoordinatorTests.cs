@@ -181,6 +181,10 @@ public class MonitoringCoordinatorTests : IDisposable
         Assert.Fail($"timed out waiting for {what}");
     }
 
+    private static Task WaitForSettledAsync(MonitoringCoordinator coordinator, ProviderId id) =>
+        WaitForTrueAsync(() => !coordinator.GetDisplayState(id).Refreshing,
+            TimeSpan.FromSeconds(10), "refresh and cache persistence settled");
+
     [Fact]
     public async Task ManualRefresh_Success_LastGoodVisible()
     {
@@ -200,6 +204,7 @@ public class MonitoringCoordinatorTests : IDisposable
         var state = await WaitForAsync(
             () => coordinator.GetDisplayState(ProviderId.Codex).LastGood,
             TimeSpan.FromSeconds(10), "last good snapshot");
+        await WaitForSettledAsync(coordinator, ProviderId.Codex);
         Assert.Equal("ident-1", state.IdentityKey);
         Assert.False(coordinator.GetDisplayState(ProviderId.Codex).Refreshing);
     }
@@ -234,6 +239,7 @@ public class MonitoringCoordinatorTests : IDisposable
         Assert.Equal(ProviderErrorKind.Timeout, state.LastAttempt!.Error);
         // 旧快照的成功时间未被失败刷新 (spec §5.2(5))。v1.1.2 前这里是与自身比较的恒真断言。
         Assert.Equal(succeededAtBeforeFailure, state.LastGood!.SucceededAtUtc);
+        await WaitForSettledAsync(coordinator, ProviderId.Codex);
     }
 
     /// <summary>A09/A04: 未核实身份的失败不动旧快照；已验证的身份切换后旧账号数据不得沿用。</summary>
@@ -279,6 +285,7 @@ public class MonitoringCoordinatorTests : IDisposable
 
         Assert.Equal(30, coordinator.GetDisplayState(ProviderId.Codex).LastGood!.Buckets[0].Windows[0].RemainingPercent);
         Assert.DoesNotContain("ident-A", coordinator.GetDisplayState(ProviderId.Codex).LastGood!.IdentityKey);
+        await WaitForSettledAsync(coordinator, ProviderId.Codex);
     }
 
     /// <summary>
@@ -328,6 +335,7 @@ public class MonitoringCoordinatorTests : IDisposable
         ClearManualGate();
         Assert.True(coordinator.RequestManualRefresh(ProviderId.Codex));
         await WaitForAsync(() => coordinator.GetDisplayState(ProviderId.Codex).LastGood, TimeSpan.FromSeconds(10), "snapshot after re-signin");
+        await WaitForSettledAsync(coordinator, ProviderId.Codex);
         Assert.Equal("ident-A", coordinator.GetDisplayState(ProviderId.Codex).LastGood!.IdentityKey);
     }
 
@@ -405,7 +413,7 @@ public class MonitoringCoordinatorTests : IDisposable
         await WaitForTrueAsync(() => !coordinator.GetDisplayState(ProviderId.Codex).Refreshing, TimeSpan.FromSeconds(10), "previous refresh settled");
         ClearManualGate();
         Assert.True(coordinator.RequestManualRefresh(ProviderId.Codex));
-        await Task.Delay(500);
+        await WaitForSettledAsync(coordinator, ProviderId.Codex);
         Assert.Equal(countBefore, fired.Count);
     }
 
@@ -426,12 +434,12 @@ public class MonitoringCoordinatorTests : IDisposable
         coordinator.RequestManualRefresh(ProviderId.Codex);
         await WaitForTrueAsync(() => coordinator.GetDisplayState(ProviderId.Codex).LastGood is not null,
             TimeSpan.FromSeconds(10), "refresh");
-        await Task.Delay(300);
+        await WaitForSettledAsync(coordinator, ProviderId.Codex);
         Assert.Equal(0, Volatile.Read(ref fired));
     }
 
     [Fact]
-    public void ApplySettings_NewlyEnabled_TriggersQuery()
+    public async Task ApplySettings_NewlyEnabled_TriggersQuery()
     {
         var adapter = new FakeAdapter(ProviderId.Codex, () => Good(ProviderId.Codex));
         using var coordinator = new MonitoringCoordinator(
@@ -442,6 +450,8 @@ public class MonitoringCoordinatorTests : IDisposable
 
         coordinator.ApplySettings(EnabledSettings(enabled: ProviderId.Codex));
         Assert.True(coordinator.Settings.Provider(ProviderId.Codex).Enabled);
+        await WaitForAsync(() => coordinator.GetDisplayState(ProviderId.Codex).LastGood, TimeSpan.FromSeconds(10), "newly enabled provider query");
+        await WaitForSettledAsync(coordinator, ProviderId.Codex);
     }
 
     /// <summary>A06: 内存监控关闭后不继续采样、缓冲不再增长。</summary>
@@ -484,6 +494,9 @@ public class MonitoringCoordinatorTests : IDisposable
         await WaitForTrueAsync(
             () => coordinator.GetDisplayState(ProviderId.Ark).LastGood?.Buckets.FirstOrDefault(b => b.SourceKey == "b1")?.Windows[0].RemainingPercent == 70,
             TimeSpan.FromSeconds(10), "merged partial snapshot");
+
+        // Snapshot publication is earlier than disk persistence; settle before fixture cleanup.
+        await WaitForSettledAsync(coordinator, ProviderId.Ark);
 
         // 部分更新是一次成功：不算失败尝试。
         Assert.Null(coordinator.GetDisplayState(ProviderId.Ark).LastAttempt);
