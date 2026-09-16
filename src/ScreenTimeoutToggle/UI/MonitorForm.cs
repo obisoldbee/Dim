@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using OBDim.Models;
 using OBDim.Monitoring.Models;
+using OBDim.Monitoring.Providers;
 using OBDim.Monitoring.Services;
 using OBDim.Services;
 
@@ -23,6 +24,7 @@ public sealed class MonitorForm : Form
     public enum View { Quota, Memory }
 
     public event Action? SettingsRequested;
+    public event Action<ProviderId>? ProviderSettingsRequested;
 
     private View _currentView = (View)(-1);
 
@@ -566,7 +568,7 @@ public sealed class MonitorForm : Form
                 Font = new Font("Microsoft YaHei UI", 8F),
                 Location = new Point(220, 19),
             };
-            var status = new Label
+            var status = new LinkLabel
             {
                 AutoSize = false,
                 AutoEllipsis = true,
@@ -590,6 +592,17 @@ public sealed class MonitorForm : Form
             card.Controls.Add(title);
             card.Controls.Add(badge);
             card.Controls.Add(updated);
+            status.Name=$"providerStatus_{id}";
+            status.LinkBehavior=LinkBehavior.HoverUnderline;
+            status.LinkClicked += (_,_) =>
+            {
+                var failure=_coordinator.GetDisplayState(id).LastAttempt;
+                if (failure is null) return;
+                if (ProviderFailureClassifier.IsAuthenticationFailure(failure.Error)
+                    || failure.Error is ProviderErrorKind.CliNotFound or ProviderErrorKind.UnsupportedEntry or ProviderErrorKind.CliVersionUnsupported)
+                    ProviderSettingsRequested?.Invoke(id);
+                else _coordinator.RequestManualRefresh(id);
+            };
             card.Controls.Add(status);
             card.Controls.Add(rows);
 
@@ -700,20 +713,29 @@ public sealed class MonitorForm : Form
         updated.Visible = updatedText.Length > 0;
 
         // Tier badge is PROVIDER-level only where the source means it that way: Codex's
-        // plan tier sits next to the provider name; MiniMax reports none; the Ark tier
+        // plan tier and MiniMax's validated inference sit next to the provider name; the Ark tier
         // belongs to its product section header, not here.
         var tier = snapshot?.Buckets.FirstOrDefault(b => b.Tier is not null)?.Tier;
-        badge.Text = state.Provider == ProviderId.Codex && tier is not null ? TierDisplay(tier) : "";
+        badge.Text = state.Provider == ProviderId.MiniMax ? snapshot?.PlanTier ?? ""
+            : state.Provider == ProviderId.Codex && tier is not null ? TierDisplay(tier) : "";
         var showBadge = badge.Text.Length > 0;
         badge.Visible = showBadge;
         badge.FitToText();
+        _toolTip.SetToolTip(badge,snapshot?.PlanTierIsInferred==true
+            ? (LocalizationService.CurrentLanguage=="en-US"?"Inferred from validated daily video entitlement (minimax-video-daily-v1).":"依据视频每日权益推断（minimax-video-daily-v1），不是接口直接返回的套餐名。") : "");
 
         // Status line BELOW the header rule, only for facts the user must know —
         // failure, staleness, disabled, paused, or nothing fetched yet. A healthy
         // card shows no status line at all.
         var parts = new List<string>();
         if (!state.Enabled) parts.Add(L("monitor.state_disabled") + " · " + L("monitor.state_disabled_hint"));
-        if (hasFailure) parts.Add(L(ErrorKeyFor(state.LastAttempt!.Error)));
+        if(state.Authenticating) parts.Add(ProviderStatusPresentation.Connection(state,LocalizationService.CurrentLanguage=="en-US").Detail);
+        if (hasFailure)
+        {
+            var failure=ProviderStatusPresentation.Failure(state.LastAttempt!.Error,state.LastAttempt.ExitCode,LocalizationService.CurrentLanguage=="en-US");
+            parts.Add(failure.Title+"\n"+failure.Detail);
+            parts.Add(LocalizationService.CurrentLanguage=="en-US"?"Click here to resolve / retry.":"点击此处处理／重试。");
+        }
         if (state.Stale) parts.Add(L("monitor.state_stale"));
         if (state.PausedUntilUserRetry && state.Enabled) parts.Add(L("monitor.paused_short"));
         if (state.Enabled && snapshot is null && !hasFailure) parts.Add(L("monitor.state_no_data_yet"));
@@ -731,11 +753,16 @@ public sealed class MonitorForm : Form
         badge.Top = title.Top + (title.Height - badge.Height) / 2;
         updated.Left = showBadge ? badge.Right + S(10) : badge.Left;
         updated.Top = title.Top + (title.Height - updated.Height) / 2;
-        statusLabel.SetBounds(S(13), S(51) + S(8), card.Width - 2 * S(13), S(18));
+        var statusWidth=Math.Max(S(80),card.Width-2*S(13));
+        var statusHeight=showStatus?Math.Max(S(18),TextRenderer.MeasureText(statusLabel.Text,statusLabel.Font,
+            new Size(statusWidth,int.MaxValue),TextFormatFlags.WordBreak|TextFormatFlags.NoPadding).Height+S(4)):0;
+        statusLabel.AutoEllipsis=false;
+        statusLabel.SetBounds(S(13),S(51)+S(8),statusWidth,statusHeight);
+        if(statusLabel is LinkLabel link) link.LinkArea=hasFailure?new LinkArea(0,statusLabel.Text.Length):new LinkArea(0,0);
 
         // Rows start below the rule (or below the status line) — never at a fixed
         // offset from a control that may or may not be visible.
-        var rowsY = S(51) + (showStatus ? S(8) + S(18) + S(4) : S(4));
+        var rowsY = S(51) + (showStatus ? S(8) + statusHeight + S(4) : S(4));
         if (rowsPanel.Location != new Point(0, rowsY)) rowsPanel.Location = new Point(0, rowsY);
         if (rowsPanel.Width != card.Width) rowsPanel.Width = card.Width;
 
@@ -769,9 +796,12 @@ public sealed class MonitorForm : Form
                         SectionHeader: true, Identity: $"product:{bucket.SourceKey}"));
                 }
 
+                if(bucket.RetainedFailureKind!=ProviderErrorKind.None)
+                    rows.Add(MetricRow(ProviderStatusPresentation.Failure(bucket.RetainedFailureKind,english:LocalizationService.CurrentLanguage=="en-US").Title,
+                        LocalizationService.CurrentLanguage=="en-US"?"Previous data":"保留上次数据","",null,null,"",true) with { Identity=$"retained:{bucket.SourceKey}" });
                 if (bucket.Error is not null)
                 {
-                    rows.Add(MetricRow(bucket.DisplayName ?? bucket.SourceKey, L("monitor.bucket_error"),
+                    rows.Add(MetricRow(bucket.DisplayName ?? bucket.SourceKey, ProviderStatusPresentation.Failure(bucket.ErrorKind,english:LocalizationService.CurrentLanguage=="en-US").Title,
                         "", null, null, "", true) with { Identity = $"status:{bucket.SourceKey}" });
                     continue;
                 }
@@ -790,6 +820,8 @@ public sealed class MonitorForm : Form
 
                 foreach (var window in bucket.Windows)
                 {
+                    // Mac overview policy: weekly video entitlement is detail-only.
+                    if (state.Provider == ProviderId.MiniMax && bucket.SourceKey == "video" && window.SourceKey == "weekly") continue;
                     // Row identity per provider, mirroring the reference semantics:
                     // Codex rows read "Codex [每周]" / "Codex Spark [5 小时]" (model name
                     // as the FULL title, window as the badge — no manual truncation, the

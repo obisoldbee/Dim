@@ -37,29 +37,33 @@ public sealed class ArkProvider : IProviderAdapter
             return SnapshotFactory.Failure(ProviderId.Ark, ProviderErrorKind.UnsupportedEntry, location.Error, attemptedAt);
         }
 
+        var authentication = await _runner.RunAsync(CliRequest.ForLocation(location,
+            ["auth","status","--format","json"]), cancellationToken).ConfigureAwait(false);
+        if (!authentication.Success || authentication.OutputTruncated)
+            return ProviderFailureClassifier.FromResult(Id,authentication,attemptedAt);
+        var authFailure = ArkAuthenticationParser.Parse(authentication.Stdout);
+        if(authFailure is not null)
+            return SnapshotFactory.Failure(Id,authFailure.Kind,null,attemptedAt) with { ErrorCode=authFailure.Code };
+
         var request = CliRequest.ForLocation(location, ["usage", "plan", "--format", "json"]);
         var result = await _runner.RunAsync(request, cancellationToken).ConfigureAwait(false);
-        if (result.Cancelled) return SnapshotFactory.Failure(ProviderId.Ark, ProviderErrorKind.Cancelled, null, attemptedAt);
-        if (result.TimedOut) return SnapshotFactory.Failure(ProviderId.Ark, ProviderErrorKind.Timeout, null, attemptedAt);
-        if (result.LaunchError is not null)
-        {
-            return SnapshotFactory.Failure(ProviderId.Ark, ProviderErrorKind.ExecutionFailed,
-                $"launch failed ({result.LaunchError})", attemptedAt);
-        }
-        if (result.OutputTruncated)
-        {
-            return SnapshotFactory.Failure(ProviderId.Ark, ProviderErrorKind.OutputLimitExceeded, null, attemptedAt);
-        }
-        if (!result.Success)
-        {
-            return SnapshotFactory.Failure(ProviderId.Ark, ProviderErrorKind.ExecutionFailed,
-                $"exit code {result.ExitCode}", attemptedAt);
-        }
+        if (!result.Success || result.OutputTruncated)
+            return ProviderFailureClassifier.FromResult(ProviderId.Ark,result,attemptedAt);
 
         var parsed = ArkPlanParser.Parse(result.Stdout);
         if (!parsed.Ok)
         {
-            return SnapshotFactory.Failure(ProviderId.Ark, parsed.ErrorKind, parsed.Error, attemptedAt);
+            return SnapshotFactory.Failure(ProviderId.Ark, parsed.ErrorKind, parsed.Error, attemptedAt) with { ErrorCode = parsed.Error is not null && parsed.Error.StartsWith("api.status.",StringComparison.Ordinal) ? parsed.Error : "provider."+parsed.ErrorKind };
+        }
+
+        var buckets = parsed.Buckets;
+        if(buckets.Any(b => b.Subscribed==true && b.Error is null && string.IsNullOrWhiteSpace(b.Tier)))
+        {
+            var metadata=await _runner.RunAsync(CliRequest.ForLocation(location,
+                ["plans","get","--format","json"]),cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            if(metadata.Success && !metadata.OutputTruncated)
+                buckets=ArkPlanMetadata.Apply(buckets,metadata.Stdout);
         }
 
         var verified = parsed.AccountId is not null || parsed.UserId is not null;
@@ -75,7 +79,7 @@ public sealed class ArkProvider : IProviderAdapter
             IdentityDisplay = parsed.AuthMethod is null ? null : $"auth={parsed.AuthMethod}",
             AttemptedAtUtc = attemptedAt,
             SucceededAtUtc = _clock.UtcNow,
-            Buckets = parsed.Buckets,
+            Buckets = buckets,
             IsPartial = parsed.Buckets.Any(b => b.Error is not null),
         };
     }
@@ -123,6 +127,9 @@ public static class ArkPlanParser
             return new ParseResult(false, ProviderErrorKind.ParseFailed, "response is not a JSON object", [], null, null, null, null);
         }
 
+        if (ProviderFailureClassifier.Envelope(root) is { } failure)
+            return new ParseResult(false, failure.Kind, failure.Code, [], null, null, null, null);
+
         var viewer = root.TryGetProperty("viewer");
         var accountId = viewer.TryGetProperty("account_id").AsNullableString();
         var userId = viewer.TryGetProperty("user_id").AsNullableString();
@@ -156,11 +163,12 @@ public static class ArkPlanParser
         var product = item.TryGetProperty("product").AsNullableString();
         if (string.IsNullOrEmpty(product)) return null;
 
-        var edition = item.TryGetProperty("edition").AsNullableString();
         var tier = item.TryGetProperty("tier").AsNullableString();
         var seatId = item.TryGetProperty("seat_id").AsNullableString();
         var subscribed = item.TryGetProperty("subscribed").AsNullableBool();
-        var error = item.TryGetProperty("error").AsNullableString();
+        var errorElement = item.TryGetProperty("error");
+        var failure = errorElement is { ValueKind: not JsonValueKind.Null and not JsonValueKind.False } error
+            ? ProviderFailureClassifier.Classify(error.GetRawText()) : null;
         var updatedAt = EpochTime.Auto(item.TryGetProperty("updated_at").AsNullableInt64());
 
         var windows = new List<QuotaWindow>();
@@ -178,10 +186,11 @@ public static class ArkPlanParser
         {
             SourceKey = product,
             DisplayName = product,
-            Tier = edition ?? tier,
+            Tier = tier, // edition (personal/team) is not the subscription tier
             SeatId = seatId,
             Subscribed = subscribed,
-            Error = error,
+            Error = failure?.Code,
+            ErrorKind = failure?.Kind ?? ProviderErrorKind.None,
             Windows = windows,
         };
 

@@ -37,28 +37,13 @@ public sealed class MiniMaxProvider : IProviderAdapter
 
         var request = CliRequest.ForLocation(location, ["quota", "show", "--output", "json"]);
         var result = await _runner.RunAsync(request, cancellationToken).ConfigureAwait(false);
-        if (result.Cancelled) return SnapshotFactory.Failure(ProviderId.MiniMax, ProviderErrorKind.Cancelled, null, attemptedAt);
-        if (result.TimedOut) return SnapshotFactory.Failure(ProviderId.MiniMax, ProviderErrorKind.Timeout, null, attemptedAt);
-        if (result.LaunchError is not null)
-        {
-            return SnapshotFactory.Failure(ProviderId.MiniMax, ProviderErrorKind.ExecutionFailed,
-                $"launch failed ({result.LaunchError})", attemptedAt);
-        }
-        if (result.OutputTruncated)
-        {
-            return SnapshotFactory.Failure(ProviderId.MiniMax, ProviderErrorKind.OutputLimitExceeded, null, attemptedAt);
-        }
-        if (!result.Success)
-        {
-            // Exit code is all we may report; raw stderr could carry identity.
-            return SnapshotFactory.Failure(ProviderId.MiniMax, ProviderErrorKind.ExecutionFailed,
-                $"exit code {result.ExitCode}", attemptedAt);
-        }
+        if (!result.Success || result.OutputTruncated)
+            return ProviderFailureClassifier.FromResult(ProviderId.MiniMax,result,attemptedAt);
 
         var parsed = MiniMaxQuotaParser.Parse(result.Stdout);
         if (!parsed.Ok)
         {
-            return SnapshotFactory.Failure(ProviderId.MiniMax, parsed.ErrorKind, parsed.Error, attemptedAt);
+            return SnapshotFactory.Failure(ProviderId.MiniMax, parsed.ErrorKind, parsed.Error, attemptedAt) with { ErrorCode = parsed.Error is not null && parsed.Error.StartsWith("api.status.",StringComparison.Ordinal) ? parsed.Error : "provider."+parsed.ErrorKind };
         }
 
         return new ProviderSnapshot
@@ -70,6 +55,8 @@ public sealed class MiniMaxProvider : IProviderAdapter
             AttemptedAtUtc = attemptedAt,
             SucceededAtUtc = _clock.UtcNow,
             Buckets = parsed.Buckets,
+            PlanTier = parsed.PlanTier,
+            PlanTierIsInferred = parsed.PlanTier is not null,
         };
     }
 }
@@ -88,7 +75,7 @@ public static class MiniMaxQuotaParser
         bool Ok,
         ProviderErrorKind ErrorKind,
         string? Error,
-        IReadOnlyList<QuotaBucket> Buckets);
+        IReadOnlyList<QuotaBucket> Buckets) { public string? PlanTier { get; init; } }
 
     public static ParseResult Parse(string stdout)
     {
@@ -107,13 +94,17 @@ public static class MiniMaxQuotaParser
             return new ParseResult(false, ProviderErrorKind.ParseFailed, "response is not a JSON object", []);
         }
 
+        if (ProviderFailureClassifier.Envelope(root) is { } failure)
+            return new ParseResult(false, failure.Kind, failure.Code, []);
+
         var baseResp = root.TryGetProperty("base_resp");
         var statusCode = baseResp.TryGetProperty("status_code").AsNullableInt32();
         if (statusCode is not null and not 0)
         {
             // status_msg is provider-generated; it may contain account hints, so it is not
             // shown raw — the UI maps the kind, the log keeps only the code.
-            return new ParseResult(false, ProviderErrorKind.ApiError, $"api status {statusCode}", []);
+            var apiFailure = ProviderFailureClassifier.Classify(baseResp.TryGetProperty("status_msg").AsNullableString());
+            return new ParseResult(false, apiFailure.Kind, $"api.status.{statusCode}", []);
         }
 
         var remains = root.TryGetProperty("model_remains");
@@ -132,7 +123,7 @@ public static class MiniMaxQuotaParser
 
         // An empty list means the source returned no plan rows — displayed as "not
         // returned", NOT as "no subscription" (spec §5.2(7)).
-        return new ParseResult(true, ProviderErrorKind.None, null, buckets);
+        return new ParseResult(true, ProviderErrorKind.None, null, buckets) { PlanTier = MiniMaxPlanInference.Resolve(root) };
     }
 
     private static QuotaBucket? MapModel(JsonElement model)

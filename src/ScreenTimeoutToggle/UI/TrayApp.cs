@@ -503,6 +503,11 @@ public class TrayApp : ApplicationContext
         {
             _monitorForm = new MonitorForm(_monitorCoordinator);
             _monitorForm.SettingsRequested += OpenMonitorSettings;
+            _monitorForm.ProviderSettingsRequested += _ =>
+            {
+                OpenMonitorSettings();
+                _monitorSettingsForm?.SelectCategory(1);
+            };
         }
         _monitorForm.SetView(initialView);
         _monitorForm.ShowAnchoredToTray(_notify);

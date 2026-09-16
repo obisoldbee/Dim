@@ -41,7 +41,7 @@ public static class SnapshotMerger
         {
             merged.Add(bucket.Error is null
                 ? bucket
-                : oldGoodByKey.TryGetValue(bucket.SourceKey, out var oldGood) ? oldGood : bucket);
+                : oldGoodByKey.TryGetValue(bucket.SourceKey, out var oldGood) ? oldGood with { RetainedFailureKind=bucket.ErrorKind==ProviderErrorKind.None?ProviderErrorKind.ApiError:bucket.ErrorKind } : bucket);
         }
 
         return partial with { Buckets = merged };

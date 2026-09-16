@@ -1,4 +1,5 @@
 using OBDim.Monitoring.Models;
+using OBDim.Monitoring.Providers;
 
 namespace OBDim.Monitoring.Services;
 
@@ -41,7 +42,9 @@ public sealed class ProviderRefreshState
     public DateTimeOffset? NextAutoAttemptUtc { get; set; }
 
     public static bool IsPauseableFailure(ProviderErrorKind kind) =>
-        kind is ProviderErrorKind.NotSignedIn or ProviderErrorKind.UnsupportedEntry or ProviderErrorKind.CliNotFound;
+        ProviderFailureClassifier.IsAuthenticationFailure(kind)
+        || kind is ProviderErrorKind.UnsupportedEntry or ProviderErrorKind.CliNotFound
+            or ProviderErrorKind.PermissionDenied or ProviderErrorKind.CliVersionUnsupported;
 
     /// <summary>
     /// Records an attempt outcome, advancing or resetting the backoff ladder.

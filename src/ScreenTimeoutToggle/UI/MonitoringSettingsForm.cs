@@ -47,6 +47,13 @@ public sealed class MonitoringSettingsForm : Form
     private MonitoringSettings _baselineMonitoring = new();
     private string _savedFingerprint = "";
     private bool _saving;
+    private readonly Dictionary<ProviderId, Label> _providerStatuses = [];
+    private readonly Dictionary<ProviderId, Label> _providerActions = [];
+    private readonly Dictionary<ProviderId, Button> _detectButtons = [];
+    private readonly Dictionary<ProviderId, Button> _loginButtons = [];
+    private readonly Dictionary<ProviderId, CancellationTokenSource> _loginOperations = [];
+    private int _pendingProviderUi;
+    internal Func<ProviderSettings,CancellationToken,Task<int>> LoginRunner { get; set; } = CliLoginLauncher.LoginAsync;
     internal Func<bool>? ConfirmDiscard { get; set; }
     internal bool HasUnsavedChanges => Fingerprint() != _savedFingerprint;
 
@@ -125,6 +132,8 @@ public sealed class MonitoringSettingsForm : Form
         content.Controls.Add(_body); content.Controls.Add(footer);
         Controls.Add(content); Controls.Add(_navigation);
         LoadDraft(); RefreshLanguage(); SelectCategory(0);
+        _coordinator.QuotaStateChanged += OnProviderStateChanged;
+        RefreshProviderStatuses();
     }
 
     protected override void OnShown(EventArgs e)
@@ -134,6 +143,7 @@ public sealed class MonitoringSettingsForm : Form
         Size = new Size(Math.Min(Width, work.Width - 16), Math.Min(Height, work.Height - 16));
         Location = new Point(Math.Clamp(Left, work.Left, work.Right - Width), Math.Clamp(Top, work.Top, work.Bottom - Height));
         base.OnShown(e);
+        RefreshProviderStatuses();
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -239,28 +249,108 @@ public sealed class MonitoringSettingsForm : Form
             Add(details, Row(path, browse), 3); advanced.Controls.Add(details);
             var expand = Bind(new Button { AutoSize = true }, "CLI 路径…", "CLI path…");
             expand.Click += (_, _) => advanced.Visible = !advanced.Visible;
-            var detect = Bind(new Button { AutoSize = true }, "重新检测程序", "Detect program");
-            var status = new Label { AutoSize = true, MaximumSize = new Size(590, 0) };
-            detect.Click += async (_, _) =>
-            {
-                var requestedPath = path.Text;
-                detect.Enabled = false; status.Text = T("检测中…", "Checking…");
-                try
-                {
-                    var cliName = id switch { ProviderId.Codex => "codex", ProviderId.MiniMax => "mmx", _ => "arkcli" };
-                    var found = await Task.Run(() => CliLocator.Locate(requestedPath, cliName));
-                    if (IsDisposed || path.Text != requestedPath) return;
-                    status.Text = found.Found ? T("已找到程序；此检查不验证登录或额度。", "Program found; sign-in and quota have not been checked.")
-                        : T("未找到可用程序：", "Program unavailable: ") + LocalizationService.Get(found.Error ?? "cli.locate_not_found");
-                }
-                catch (Exception) { if (!IsDisposed) status.Text = T("检测失败，请检查文件权限和路径。", "Detection failed. Check the path and file permissions."); }
-                finally { if (!IsDisposed) detect.Enabled = true; }
-            };
-            path.TextChanged += (_, _) => status.Text = T("路径已改变，需要重新检测。", "Path changed; check again.");
-            Add(page, Row(expand, detect), 3); Add(page, advanced, 3); Add(page, status, 12);
+            var detect = Bind(new Button { Name=$"check_{id}",AutoSize = true }, "重新检测", "Check connection");
+            var login = new Button { Name=$"login_{id}",AutoSize=true };
+            var status = new Label { Name=$"connection_{id}",AutoSize=true,MaximumSize=new Size(590,0) };
+            var action = new Label { Name=$"action_{id}",AutoSize=true,MaximumSize=new Size(590,0),ForeColor=Color.FromArgb(145,100,21) };
+            _providerStatuses[id]=status; _providerActions[id]=action;
+            _detectButtons[id]=detect; _loginButtons[id]=login;
+            detect.Click += (_,_) => CheckProvider(id);
+            login.Click += async (_,_) => await LoginProviderAsync(id);
+            path.TextChanged += (_,_) => RefreshProviderStatuses();
+            enable.CheckedChanged += (_,_) => RefreshProviderStatuses();
+            Add(page,Row(expand,detect,login),3); Add(page,advanced,3); Add(page,status,3); Add(page,action,12);
         }
         Add(page, Label("火山方舟产品显示（不改变订阅状态）", "Ark product visibility (does not change subscriptions)"));
         Add(page, Row(_agentPlan, _codingPlan));
+    }
+
+    private readonly HashSet<ProviderId> _awaitingVerification=[];
+
+    private bool UsesSavedProvider(ProviderId id)
+    {
+        var saved=_coordinator.Settings.Provider(id);
+        return _enabled[id].Checked==saved.Enabled &&
+            string.Equals(_paths[id].Text.Trim(),saved.CliPath?.Trim()??"",StringComparison.Ordinal);
+    }
+
+    internal void CheckProvider(ProviderId id)
+    {
+        if (!UsesSavedProvider(id))
+        { _providerActions[id].Text=T("请先保存来源开关或 CLI 路径的修改，再检测。","Save provider or CLI-path changes before checking."); return; }
+        var started=_coordinator.RequestManualRefresh(id);
+        _providerActions[id].Text=started?"":T("已有检测正在运行，或需等待 15 秒冷却后重试。","A check is running, or the 15-second retry cooldown has not elapsed.");
+        RefreshProviderStatuses();
+    }
+
+    internal async Task LoginProviderAsync(ProviderId id)
+    {
+        if (_loginOperations.TryGetValue(id,out var active)) { active.Cancel(); return; }
+        if (!UsesSavedProvider(id))
+        { _providerActions[id].Text=T("请先保存来源开关或 CLI 路径的修改，再登录。","Save provider or CLI-path changes before signing in."); return; }
+        if (!_coordinator.BeginAuthentication(id)) return;
+        using var cancellation=new CancellationTokenSource();
+        _loginOperations[id]=cancellation;
+        var verify=false;
+        _providerActions[id].Text=T("已启动官方登录；请完成 CLI 窗口或浏览器中的操作。","Official sign-in started; complete the CLI or browser flow.");
+        RefreshProviderStatuses();
+        try
+        {
+            var settings=_coordinator.Settings.Provider(id);
+            var exit=await Task.Run(()=>LoginRunner(settings,cancellation.Token));
+            verify=true; // fresh provider response, not exit code, determines success
+            if (!IsDisposed) _providerActions[id].Text=exit==0
+                ?T("登录程序已结束，正在重新验证连接与额度…","Sign-in process finished; verifying connection and quota…")
+                :T($"登录程序返回退出码 {exit}，正在核查授权是否仍已完成…",$"Sign-in exited with code {exit}; checking whether authorization completed…");
+        }
+        catch(OperationCanceledException)
+        { if (!IsDisposed) _providerActions[id].Text=T("登录已取消或超时；不会把此次操作标记为成功。","Sign-in cancelled or timed out; no success was assumed."); }
+        catch(Exception)
+        { if (!IsDisposed) _providerActions[id].Text=T("无法启动官方登录。请检查 CLI 路径及版本后重试。","Could not start official sign-in. Check the CLI path and version."); }
+        finally
+        {
+            _loginOperations.Remove(id);
+            if(verify && !IsDisposed) _awaitingVerification.Add(id);
+            _coordinator.EndAuthentication(id,verify && !IsDisposed);
+            if (!IsDisposed) RefreshProviderStatuses();
+        }
+    }
+
+    private void OnProviderStateChanged()
+    {
+        if (IsDisposed || !IsHandleCreated || Interlocked.Exchange(ref _pendingProviderUi,1)==1) return;
+        try { BeginInvoke((Action)(()=> { Interlocked.Exchange(ref _pendingProviderUi,0); if(!IsDisposed) RefreshProviderStatuses(); })); }
+        catch(InvalidOperationException) { Interlocked.Exchange(ref _pendingProviderUi,0); }
+    }
+
+    private void RefreshProviderStatuses()
+    {
+        foreach(var (id,label) in _providerStatuses)
+        {
+            var state=_coordinator.GetDisplayState(id);
+            if(_awaitingVerification.Contains(id) && !state.Refreshing && (state.LastAttempt is not null || state.LastGood is not null))
+            { _awaitingVerification.Remove(id); _providerActions[id].Text=""; }
+            var text=ProviderStatusPresentation.Connection(state,English);
+            var matches=UsesSavedProvider(id);
+            label.Text=matches?text.Title+"\n"+text.Detail:T("来源设置尚未保存。保存后可检测或登录。","Provider changes are unsaved. Save before checking or signing in.");
+            label.ForeColor=state.LastAttempt?.HasError==true?Color.FromArgb(166,63,38):Color.FromArgb(66,74,86);
+            var logging=_loginOperations.ContainsKey(id);
+            _loginButtons[id].Text=logging?T("取消登录","Cancel sign-in"):
+                text.NeedsLogin?T("重新登录…","Sign in again…"):T("登录／重新授权…","Sign in / reauthorize…");
+            _loginButtons[id].Enabled=logging || state.Enabled;
+            _detectButtons[id].Enabled=state.Enabled&&!state.Refreshing&&!state.Authenticating;
+            _paths[id].Enabled=!logging; _enabled[id].Enabled=!logging;
+        }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if(disposing)
+        {
+            _coordinator.QuotaStateChanged-=OnProviderStateChanged;
+            foreach(var cancellation in _loginOperations.Values.ToArray()) cancellation.Cancel();
+        }
+        base.Dispose(disposing);
     }
 
     private void BuildNotifications()
@@ -331,6 +421,7 @@ public sealed class MonitoringSettingsForm : Form
             SetInterval(_intervals[id], settings.RefreshIntervalMinutes);
         }
         UpdateEffectiveIntervals(); _savedFingerprint = Fingerprint();
+        RefreshProviderStatuses();
     }
 
     private AppConfig DraftApp() => _baselineApp with

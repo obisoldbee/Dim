@@ -55,6 +55,7 @@ public sealed class MonitoringCoordinator : IDisposable
     private readonly CancellationTokenSource _lifetimeCts = new();
     private volatile bool _disposed;
     private bool _clearingCache;
+    private readonly HashSet<ProviderId> _authenticating = [];
 
     public event Action? QuotaStateChanged;
     public event Action? MemoryStateChanged;
@@ -149,7 +150,7 @@ public sealed class MonitoringCoordinator : IDisposable
             foreach (ProviderId id in Enum.GetValues<ProviderId>())
             {
                 var state = _refreshStates[id];
-                if (!_settings.Provider(id).Enabled || _settings.EffectiveRefreshInterval(id) == TimeSpan.Zero
+                if (_authenticating.Contains(id) || !_settings.Provider(id).Enabled || _settings.EffectiveRefreshInterval(id) == TimeSpan.Zero
                     || state.InFlight || state.PausedUntilUserRetry) continue;
                 if (state.LastAttemptUtc is not null && !state.IsDueForAutoRefresh(_clock.UtcNow)) continue;
                 if (BeginRequestLocked(id) is { } request) due.Add(request);
@@ -163,7 +164,7 @@ public sealed class MonitoringCoordinator : IDisposable
         RefreshRequest? request;
         lock (_stateLock)
         {
-            if (_disposed || _clearingCache || !_settings.Provider(id).Enabled) return false;
+            if (_disposed || _clearingCache || _authenticating.Contains(id) || !_settings.Provider(id).Enabled) return false;
             var state = _refreshStates[id];
             if (!state.IsManualRefreshAllowed(_clock.UtcNow)) return false;
             request = BeginRequestLocked(id);
@@ -173,6 +174,38 @@ public sealed class MonitoringCoordinator : IDisposable
         }
         QueueRequest(request);
         return true;
+    }
+
+    /// <summary>Explicit login invalidates old account work, without altering saved settings.</summary>
+    public bool BeginAuthentication(ProviderId id)
+    {
+        CancellationTokenSource? cancel;
+        lock (_stateLock)
+        {
+            if (_disposed || _clearingCache || !_settings.Provider(id).Enabled || !_authenticating.Add(id)) return false;
+            _identityGenerations[id]++;
+            cancel = _requests[id]?.Cancellation;
+            _requests[id] = null;
+            _refreshStates[id].InFlight = false;
+            _refreshStates[id].PausedUntilUserRetry = true;
+            _lastGoodSnapshots[id] = null; _lastAttempts[id] = null;
+            _identityKeys[id] = null; _reminderMarks[id] = [];
+        }
+        try { if (cancel is not null) _ = cancel.CancelAsync(); } catch (ObjectDisposedException) { }
+        RaiseQuotaStateChanged();
+        return true;
+    }
+
+    public void EndAuthentication(ProviderId id, bool verify)
+    {
+        lock (_stateLock)
+        {
+            _authenticating.Remove(id);
+            _refreshStates[id].LastManualStartUtc = null;
+            if (verify) _refreshStates[id].ResetPause();
+        }
+        if (verify) RequestManualRefresh(id); // exit code alone is never authenticated evidence
+        RaiseQuotaStateChanged();
     }
 
     public void RequestManualRefreshAll()
@@ -277,7 +310,7 @@ public sealed class MonitoringCoordinator : IDisposable
                 _reminderMarks[id] = cached is null ? [] : new HashSet<string>(cached.ReminderFiredMarks.Where(p => p.Value).Select(p => p.Key));
                 _lastGoodSnapshots[id] = cached?.LastGood;
             }
-            if (snapshot.Error == ProviderErrorKind.NotSignedIn)
+            if (ProviderFailureClassifier.IsAuthenticationFailure(snapshot.Error))
             {
                 _lastGoodSnapshots[id] = null;
                 _reminderMarks[id] = [];
@@ -304,7 +337,7 @@ public sealed class MonitoringCoordinator : IDisposable
             }
         }
         if (!IsCurrent(request)) return;
-        if (snapshot.Error == ProviderErrorKind.NotSignedIn) _cache.ClearProvider(id);
+        if (ProviderFailureClassifier.IsAuthenticationFailure(snapshot.Error)) _cache.ClearProvider(id);
         else if (persist is not null)
         {
             _cache.Save(persist);
@@ -348,6 +381,7 @@ public sealed class MonitoringCoordinator : IDisposable
                 Provider = id,
                 Enabled = settings.Enabled,
                 Refreshing = state.InFlight,
+                Authenticating = _authenticating.Contains(id),
                 LastGood = lastGood,
                 LastAttempt = _lastAttempts[id],
                 Stale = lastGood is not null && FreshnessEvaluator.IsStale(lastGood, _clock.UtcNow, FreshnessEvaluator.MaxAge(_settings.EffectiveRefreshInterval(id))),
@@ -480,7 +514,8 @@ public sealed class MonitoringCoordinator : IDisposable
         Providers = GetDisplayStates().Select(state => new
         {
             Provider = state.Provider.ToString(), state.Enabled, state.Refreshing, state.Stale,
-            state.PausedUntilUserRetry, Error = state.LastAttempt?.Error.ToString(),
+            state.PausedUntilUserRetry, state.Authenticating, Error = state.LastAttempt?.Error.ToString(),
+            ErrorCode=state.LastAttempt?.ErrorCode, ExitCode=state.LastAttempt?.ExitCode,
             LastSuccessUtc = state.LastGood?.SucceededAtUtc, BucketCount = state.LastGood?.Buckets.Count ?? 0,
         }),
     }, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });

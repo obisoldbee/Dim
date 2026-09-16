@@ -71,6 +71,7 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        if(args.Length>1 && args[1]=="--auth-parity") { AuthParityProbe.Run(args[0]); return; }
         _output = Path.GetFullPath(args[0]); Directory.CreateDirectory(_output);
         Application.SetHighDpiMode(HighDpiMode.SystemAware);
         Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);

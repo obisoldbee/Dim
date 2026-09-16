@@ -84,20 +84,11 @@ public sealed class CodexProvider : IProviderAdapter
             // account/read takes an empty params OBJECT on 0.154.0 — `null` produced an
             // error frame in the real-machine trial, while {} worked in the probe.
             var accountResponse = await channel.SendAsync(1, "account/read", new { }, timeoutCts.Token).ConfigureAwait(false);
-            var rateLimitsResponse = await channel.SendAsync(2, "account/rateLimits/read", new { }, timeoutCts.Token).ConfigureAwait(false);
-
-            if (accountResponse.Error is not null || rateLimitsResponse.Error is not null)
+            if(accountResponse.Error is {} accountError)
             {
-                var which = accountResponse.Error is not null ? "account/read" : "account/rateLimits/read";
-                return Fail(ProviderErrorKind.ExecutionFailed, $"{which} returned an error frame");
+                var failure=ProviderFailureClassifier.Classify(accountError.GetRawText());
+                return Fail(failure.Kind,failure.Code);
             }
-
-            var mapped = CodexRateLimitsMapper.Map(rateLimitsResponse.Result!.Value);
-            if (!mapped.Ok)
-            {
-                return Fail(ProviderErrorKind.ParseFailed, mapped.Error);
-            }
-
             var (email, planType, accountType) = CodexAccountMapper.Map(accountResponse.Result ?? default);
             if (accountResponse.Result is null)
             {
@@ -108,6 +99,22 @@ public sealed class CodexProvider : IProviderAdapter
             if (requiresAuth == true && accountType is null)
             {
                 return Fail(ProviderErrorKind.NotSignedIn, null);
+            }
+
+            var rateLimitsResponse = await channel.SendAsync(2, "account/rateLimits/read", new { }, timeoutCts.Token).ConfigureAwait(false);
+
+            if (accountResponse.Error is not null || rateLimitsResponse.Error is not null)
+            {
+                var which = accountResponse.Error is not null ? "account/read" : "account/rateLimits/read";
+                var error = accountResponse.Error ?? rateLimitsResponse.Error;
+                var failure = ProviderFailureClassifier.Classify(error?.GetRawText());
+                return Fail(failure.Kind, failure.Code);
+            }
+
+            var mapped = CodexRateLimitsMapper.Map(rateLimitsResponse.Result!.Value);
+            if (!mapped.Ok)
+            {
+                return Fail(ProviderErrorKind.ParseFailed, mapped.Error);
             }
 
             var identityKey = MonitoringIdentity.Hash("codex", mapped.AccountId, email);

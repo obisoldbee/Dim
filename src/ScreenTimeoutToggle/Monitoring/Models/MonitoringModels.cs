@@ -38,6 +38,15 @@ public enum ProviderErrorKind
     Cancelled = 9,
     /// <summary>The provider is disabled in monitoring settings (nothing was run).</summary>
     Disabled = 10,
+    AuthenticationExpired = 11,
+    PermissionDenied = 12,
+    NetworkError = 13,
+    RateLimited = 14,
+    ServiceUnavailable = 15,
+    SubscriptionExpired = 16,
+    QuotaExhausted = 17,
+    NoSubscription = 18,
+    CliVersionUnsupported = 19,
 }
 
 /// <summary>
@@ -128,6 +137,8 @@ public sealed record QuotaBucket
 
     /// <summary>Per-bucket failure (Ark partial results). Other buckets stay valid.</summary>
     public string? Error { get; init; }
+    public ProviderErrorKind ErrorKind { get; init; }
+    public ProviderErrorKind RetainedFailureKind { get; init; }
 
     public IReadOnlyList<QuotaWindow> Windows { get; init; } = [];
 }
@@ -190,6 +201,11 @@ public sealed record ProviderSnapshot
 
     /// <summary>Sanitized, actionable error detail. Raw stderr never lands here.</summary>
     public string? ErrorMessage { get; init; }
+    /// <summary>Allowlisted diagnostic code; never raw CLI output or credentials.</summary>
+    public string? ErrorCode { get; init; }
+    public int? ExitCode { get; init; }
+    public string? PlanTier { get; init; }
+    public bool PlanTierIsInferred { get; init; }
 
     public IReadOnlyList<QuotaBucket> Buckets { get; init; } = [];
 
@@ -327,6 +343,7 @@ public sealed record ProviderDisplayState
 
     /// <summary>Refresh currently in flight. The previous snapshot stays visible while it runs.</summary>
     public bool Refreshing { get; init; }
+    public bool Authenticating { get; init; }
 
     /// <summary>The last good snapshot, when one exists (may be from cache or a previous refresh).</summary>
     public ProviderSnapshot? LastGood { get; init; }

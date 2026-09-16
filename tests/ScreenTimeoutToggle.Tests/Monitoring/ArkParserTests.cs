@@ -22,7 +22,7 @@ public class ArkPlanParserTests
 
         var bucket = Assert.Single(result.Buckets);
         Assert.Equal("coding-plan", bucket.SourceKey);
-        Assert.Equal("personal", bucket.Tier);
+        Assert.Null(bucket.Tier); // edition is not a plan level
         Assert.True(bucket.Subscribed);
         Assert.Null(bucket.Error);
 
