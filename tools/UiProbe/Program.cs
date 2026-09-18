@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -6,6 +6,7 @@ using OBDim.Monitoring.Infrastructure;
 using OBDim.Monitoring.Models;
 using OBDim.Monitoring.Providers;
 using OBDim.Monitoring.Services;
+using OBDim.Services;
 using OBDim.UI;
 
 internal static class Program
@@ -68,6 +69,18 @@ internal static class Program
         await Task.Delay(15);
     }
 
+    /// <summary>
+    /// Memory sampling is single-flight and off the UI thread now, so "ask, then wait for it to
+    /// land" is the only correct way to drive it from a probe.
+    /// </summary>
+    private static async Task SampleOnce(MonitoringCoordinator coordinator)
+    {
+        coordinator.RequestMemoryRefresh();
+        var watch = Stopwatch.StartNew();
+        while (coordinator.MemoryRefreshInFlight && watch.Elapsed < TimeSpan.FromSeconds(5)) await Task.Delay(2);
+        await Task.Delay(5);
+    }
+
     [STAThread]
     private static void Main(string[] args)
     {
@@ -89,7 +102,7 @@ internal static class Program
             try
             {
                 coordinator.RequestManualRefreshAll();
-                typeof(MonitoringCoordinator).GetMethod("SampleMemory", Private)!.Invoke(coordinator, null);
+                await SampleOnce(coordinator);
                 await Settle(coordinator);
                 form.Refresh();
                 var dpi = form.DeviceDpi;
@@ -127,14 +140,79 @@ internal static class Program
                 }
                 heartbeat.Stop();
                 form.SetView(MonitorForm.View.Memory); Capture(form, "memory");
+
+                // ---- memory page: hot metric/range switching with real paints and real handles ----
+                var chart = Descendants(form).Single(c => c.GetType().Name == "MemoryTrendPanel");
+                var chartType = chart.GetType();
+                long Builds() => Convert.ToInt64(chartType.GetProperty("GeometryBuildCount",
+                    BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(chart));
+
+                // Seed a full two hours so the widest range is drawn from real coverage, not a stub.
+                var seed = DateTimeOffset.UtcNow.AddMinutes(-121);
+                for (var i = 0; i <= 1440; i++)
+                {
+                    coordinator.MemoryHistory.Add(new MemorySample
+                    {
+                        SampledAtUtc = seed.AddSeconds(i * 5.0),
+                        PhysicalTotalBytes = 32UL * 1024 * 1024 * 1024,
+                        PhysicalAvailableBytes = (ulong)(12L * 1024 * 1024 * 1024 + Math.Sin(i / 37.0) * 2.2e9),
+                        CommitTotalBytes = (ulong)(24L * 1024 * 1024 * 1024 + Math.Cos(i / 41.0) * 1.4e10),
+                        CommitLimitBytes = 48UL * 1024 * 1024 * 1024,
+                        LowMemorySignal = false,
+                    });
+                }
+
+                var segmentButtons = Descendants(form).OfType<Button>().Where(b =>
+                    !string.IsNullOrEmpty(b.AccessibleName)
+                    && b.Text != "⟳" && b.Text != "⚙"
+                    && b.Text != LocalizationService.Get("monitor.tab_quota")
+                    && b.Text != LocalizationService.Get("monitor.tab_memory")
+                    && b.Text != LocalizationService.Get("monitor.open_task_manager")).ToList();
+
+                // The page follows the coordinator's state event; seeding the buffer directly does
+                // not raise one, so push a real sample through before measuring the chart.
+                await SampleOnce(coordinator);
+                form.Refresh();
+                Application.DoEvents();
+
+                var buildsBefore = Builds();
+                var gdiMemoryBefore = Gui(0); var userMemoryBefore = Gui(1);
+                var controlsMemoryBefore = Descendants(form).Count();
+                var memorySwitches = new List<double>();
+                for (var i = 0; i < 100; i++)
+                {
+                    var switchWatch = Stopwatch.StartNew();
+                    segmentButtons[i % segmentButtons.Count].PerformClick();
+                    chart.Refresh();
+                    memorySwitches.Add(switchWatch.Elapsed.TotalMilliseconds);
+                    await Task.Delay(1);
+                }
+                var buildsAfter = Builds();
+                var gdiMemoryAfter = Gui(0); var userMemoryAfter = Gui(1);
+                var controlsMemoryAfter = Descendants(form).Count();
+                memorySwitches.Sort();
+
+                void Select(string metric, string range)
+                {
+                    var metricProperty = chartType.GetProperty("Metric")!;
+                    var rangeProperty = chartType.GetProperty("Range")!;
+                    metricProperty.SetValue(chart, Enum.Parse(metricProperty.PropertyType, metric));
+                    rangeProperty.SetValue(chart, Enum.Parse(rangeProperty.PropertyType, range));
+                    form.Refresh();
+                    Application.DoEvents();
+                }
+
+                Select("PhysicalUsed", "Hour1"); Capture(form, "memory-physical-1h");
+                Select("Commit", "Hour1"); Capture(form, "memory-commit-1h");
+                Select("PhysicalUsed", "Hour2"); Capture(form, "memory-physical-2h");
+                Select("Commit", "Hour2"); Capture(form, "memory-commit-2h");
                 var beforeHidden = Descendants(form).Count();
                 var hiddenQuotaLayouts = 0;
                 var rowPanels = (Dictionary<ProviderId, FlowLayoutPanel>)typeof(MonitorForm).GetField("_cardRows", Private)!.GetValue(form)!;
                 foreach (var panel in rowPanels.Values) panel.Layout += (_, _) => hiddenQuotaLayouts++;
                 for (var i = 0; i < 12; i++)
                 {
-                    typeof(MonitoringCoordinator).GetMethod("SampleMemory", Private)!.Invoke(coordinator, null);
-                    await Task.Delay(20);
+                    await SampleOnce(coordinator);
                 }
                 await Task.Delay(30);
                 var afterHidden = Descendants(form).Count();
@@ -179,6 +257,14 @@ internal static class Program
                     SlowStartupRequestMilliseconds = slowStartupRequestMilliseconds,
                     ReopenP95Milliseconds = reopenSamples[94],
                     PopoverInstancesFor100Reopens = starts, GdiBefore = gdiBefore, GdiAfter = gdiAfter, UserBefore = userBefore, UserAfter = userAfter,
+                    MemorySegmentButtons = segmentButtons.Count,
+                    MemorySwitchP50Milliseconds = memorySwitches[49],
+                    MemorySwitchP95Milliseconds = memorySwitches[94],
+                    MemorySwitchMaxMilliseconds = memorySwitches[^1],
+                    MemoryGeometryBuildsFor100Switches = buildsAfter - buildsBefore,
+                    MemoryControlsBefore = controlsMemoryBefore, MemoryControlsAfter = controlsMemoryAfter,
+                    MemoryGdiBefore = gdiMemoryBefore, MemoryGdiAfter = gdiMemoryAfter,
+                    MemoryUserBefore = userMemoryBefore, MemoryUserAfter = userMemoryAfter,
                 }, new JsonSerializerOptions { WriteIndented = true }));
                 Console.WriteLine(File.ReadAllText(Path.Combine(_output, "metrics.json")));
             }
