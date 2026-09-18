@@ -184,39 +184,75 @@ public sealed class WindowsMemoryReader : IMemoryReader, IDisposable
 }
 
 /// <summary>
-/// Bounded one-hour memory history (spec §7): at most <see cref="Capacity"/> samples and
-/// never older than the retention window. Gaps (sleep, disabled sampling, read failures)
-/// are simply absent — the trend chart renders them as breaks, never interpolated.
-/// All methods are thread-safe; the coordinator samples on one timer thread while the UI reads.
+/// The history plus the number it is cached under. A renderer that keys its geometry on
+/// count-and-last-timestamp alone will happily keep a stale curve when a sample is corrected
+/// in place, so every content change — including a same-timestamp replacement — advances this.
+/// </summary>
+public sealed record MemoryHistorySnapshot(long Version, IReadOnlyList<MemorySample> Samples);
+
+/// <summary>
+/// Bounded memory history: two independent limits, count and age, because either alone is
+/// sufficient to lose the other (a stall leaves 1600 ancient samples; a flood of 1-second
+/// reads would fill 1600 well inside the retention window). Gaps — sleep, disabled sampling,
+/// read failures — are simply absent; the trend chart renders them as breaks and never
+/// interpolates. All methods are thread-safe: the coordinator samples on one timer thread
+/// while the UI reads on another.
 /// </summary>
 public sealed class MemoryHistoryBuffer
 {
+    /// <summary>
+    /// Five selectable windows up to two hours, sampled every five seconds: 1441 points fill
+    /// the longest one with both bounds inclusive. The headroom above that is deliberate —
+    /// with only 1441 slots the count bound would start evicting the oldest sample of the
+    /// 2-hour window the moment a single read arrives early.
+    /// </summary>
+    public const int DefaultCapacity = 1600;
+
+    public static readonly TimeSpan DefaultRetention = TimeSpan.FromHours(2);
+
     private readonly object _lock = new();
     private readonly List<MemorySample> _samples = [];
     private readonly int _capacity;
     private readonly TimeSpan _retention;
+    private long _version;
 
-    public MemoryHistoryBuffer(int capacity = 720, TimeSpan? retention = null)
+    public MemoryHistoryBuffer(int capacity = DefaultCapacity, TimeSpan? retention = null)
     {
         _capacity = capacity;
-        _retention = retention ?? TimeSpan.FromHours(1);
+        _retention = retention ?? DefaultRetention;
     }
 
+    /// <summary>
+    /// Records one sample. A sample carrying a timestamp already in the history replaces it:
+    /// a re-read of an instant is a correction, not a second observation, and appending it
+    /// would both duplicate the point and consume a slot.
+    /// </summary>
     public void Add(MemorySample sample)
     {
         lock (_lock)
         {
-            _samples.Add(sample);
+            var existing = _samples.FindIndex(s => s.SampledAtUtc == sample.SampledAtUtc);
+            if (existing >= 0)
+            {
+                if (_samples[existing].Equals(sample)) return;
+                _samples[existing] = sample;
+            }
+            else
+            {
+                _samples.Add(sample);
+            }
+
+            _version++;
             Trim(DateTimeOffset.UtcNow);
         }
     }
 
-    public MemorySample[] Snapshot()
+    public MemoryHistorySnapshot SnapshotWithVersion()
     {
         lock (_lock)
         {
             Trim(DateTimeOffset.UtcNow);
-            return [.. _samples];
+            return new MemoryHistorySnapshot(_version, [.. _samples]);
         }
     }
 
@@ -232,6 +268,11 @@ public sealed class MemoryHistoryBuffer
         }
     }
 
+    public long Version
+    {
+        get { lock (_lock) return _version; }
+    }
+
     public MemorySample? Latest
     {
         get
@@ -245,16 +286,29 @@ public sealed class MemoryHistoryBuffer
 
     public void Clear()
     {
-        lock (_lock) _samples.Clear();
+        lock (_lock)
+        {
+            if (_samples.Count == 0) return;
+            _samples.Clear();
+            _version++;
+        }
     }
 
-    /// <summary>Removes samples beyond capacity OR older than retention — the two bounds from spec A06.</summary>
+    /// <summary>Removes samples beyond capacity OR older than retention — the two bounds of A06.</summary>
     private void Trim(DateTimeOffset now)
     {
         var cutoff = now - _retention;
         var start = 0;
         while (start < _samples.Count && _samples[start].SampledAtUtc < cutoff) start++;
-        if (start > 0) _samples.RemoveRange(0, start);
-        if (_samples.Count > _capacity) _samples.RemoveRange(0, _samples.Count - _capacity);
+        if (start > 0)
+        {
+            _samples.RemoveRange(0, start);
+            _version++;
+        }
+        if (_samples.Count > _capacity)
+        {
+            _samples.RemoveRange(0, _samples.Count - _capacity);
+            _version++;
+        }
     }
 }

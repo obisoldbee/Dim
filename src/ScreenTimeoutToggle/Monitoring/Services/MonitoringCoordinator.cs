@@ -52,6 +52,7 @@ public sealed class MonitoringCoordinator : IDisposable
 
     private System.Threading.Timer? _memoryTimer;
     private System.Threading.Timer? _schedulerTimer;
+    private int _memorySampleInFlight;
     private readonly CancellationTokenSource _lifetimeCts = new();
     private volatile bool _disposed;
     private bool _clearingCache;
@@ -393,17 +394,57 @@ public sealed class MonitoringCoordinator : IDisposable
     public IReadOnlyList<ProviderDisplayState> GetDisplayStates() =>
         Enum.GetValues<ProviderId>().Select(GetDisplayState).ToList();
 
-    private void SampleMemory()
+    private void SampleMemory() => TryStartMemorySample();
+
+    /// <summary>
+    /// Starts one memory sample, on a worker thread, if no sample is already running.
+    /// <para>
+    /// Single-flight on purpose: the 5-second timer and the memory page's refresh button share this
+    /// entry point, and queueing a second read behind a slow first one would make the page's "刷新"
+    /// button lie about what it did. A coalesced request is not an error — the running read is the
+    /// same observation the caller asked for.
+    /// </para>
+    /// Returns false when sampling is disabled or a read is already in flight; the caller keeps the
+    /// last known figures rather than showing an empty chart.
+    /// </summary>
+    private bool TryStartMemorySample()
     {
-        if (_disposed) return;
+        if (_disposed) return false;
         lock (_stateLock)
         {
-            if (!_settings.MemoryEnabled)
-            {
-                // Disabled: no sampling, no growth (spec A06); the last state stays frozen.
-                return;
-            }
+            // Disabled: no sampling, no growth (spec A06); the last state stays frozen.
+            if (!_settings.MemoryEnabled) return false;
         }
+
+        if (Interlocked.CompareExchange(ref _memorySampleInFlight, 1, 0) != 0) return false;
+
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                SampleMemoryCore();
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _memorySampleInFlight, 0);
+            }
+        });
+        return true;
+    }
+
+    /// <summary>
+    /// One on-demand memory sample for the memory page's refresh button. Reads no CLI, queries no
+    /// quota provider and inherits none of their cooldowns — the quota page's "仅手动" semantics and
+    /// the memory cadence are separate contracts and must stay that way.
+    /// </summary>
+    public bool RequestMemoryRefresh() => TryStartMemorySample();
+
+    /// <summary>True while a memory read is running, so the page can show busy without redrawing.</summary>
+    public bool MemoryRefreshInFlight => Volatile.Read(ref _memorySampleInFlight) == 1;
+
+    private void SampleMemoryCore()
+    {
+        if (_disposed) return;
 
         try
         {

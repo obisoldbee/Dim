@@ -21,6 +21,7 @@ namespace OBDim.Tests.Monitoring;
 /// go red for this exact bug class in-process (verified: DPI-unaware hosts fit 额度 in
 /// 54px; SystemAware + visual styles need 56px — see docs/research/260913/tab-repro).
 /// </summary>
+[Collection("NativeUi")]
 public class MonitorFormTabLabelTests
 {
     [Fact]

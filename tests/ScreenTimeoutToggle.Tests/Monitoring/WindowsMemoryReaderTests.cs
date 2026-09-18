@@ -53,7 +53,7 @@ public class MemoryHistoryBufferTests
             LowMemorySignal = false,
         };
 
-    /// <summary>A06: after more than an hour of samples the count still respects the 720-point bound.</summary>
+    /// <summary>The count bound holds however long the samples pretend to be.</summary>
     [Fact]
     public void MoreThanHourOfSamples_CountStaysAtOrBelowCapacity()
     {
@@ -71,7 +71,7 @@ public class MemoryHistoryBufferTests
         var buffer = new MemoryHistoryBuffer(capacity: 100, retention: TimeSpan.FromHours(1));
         buffer.Add(Sample(secondsAgo: (int)TimeSpan.FromHours(2).TotalSeconds));
         buffer.Add(Sample(secondsAgo: 10));
-        var snapshot = buffer.Snapshot();
+        var snapshot = buffer.SnapshotWithVersion().Samples;
 
         Assert.Single(snapshot);
         Assert.Equal(10, (DateTimeOffset.UtcNow - snapshot[0].SampledAtUtc).TotalSeconds, 1);
@@ -84,9 +84,9 @@ public class MemoryHistoryBufferTests
         var buffer = new MemoryHistoryBuffer(capacity: 100, retention: TimeSpan.FromHours(1));
         buffer.Add(Sample(secondsAgo: 3000));
         buffer.Add(Sample(secondsAgo: 10));
-        var snapshot = buffer.Snapshot();
+        var snapshot = buffer.SnapshotWithVersion().Samples;
 
-        Assert.Equal(2, snapshot.Length);
+        Assert.Equal(2, snapshot.Count);
         var gap = snapshot[1].SampledAtUtc - snapshot[0].SampledAtUtc;
         Assert.True(gap > TimeSpan.FromMinutes(5), $"gap={gap}");
     }

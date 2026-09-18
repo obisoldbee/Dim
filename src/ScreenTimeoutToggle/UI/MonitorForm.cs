@@ -3,6 +3,7 @@ using System.Drawing.Drawing2D;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using OBDim.Models;
+using OBDim.Monitoring.Infrastructure;
 using OBDim.Monitoring.Models;
 using OBDim.Monitoring.Providers;
 using OBDim.Monitoring.Services;
@@ -434,7 +435,7 @@ public sealed class MonitorForm : Form
         _refreshButton.BackColor = PageBack;
         _refreshButton.Font = new Font("Segoe UI Symbol", 12F);
         _refreshButton.Cursor = Cursors.Hand;
-        _refreshButton.Click += (_, _) => _coordinator.RequestManualRefreshAll();
+        _refreshButton.Click += (_, _) => RequestRefreshForVisibleView();
         _refreshButton.AccessibleName = L("monitor.refresh_all");
         _toolTip.SetToolTip(_refreshButton, L("monitor.refresh_all"));
 
@@ -484,6 +485,44 @@ public sealed class MonitorForm : Form
         LayoutTabs();
         Volatile.Write(ref _visibleView, Visible ? (int)view : -1);
         RefreshVisibleView();
+        ApplyRefreshAffordance();
+    }
+
+    /// <summary>
+    /// Top-bar refresh means "refresh what you are looking at". The memory page needs one system
+    /// read; the quota page needs the provider CLIs. Routing both through RequestManualRefreshAll
+    /// meant the memory page shell-spawned up to three CLIs to redraw a chart it could sample
+    /// locally, and the quota page's "仅手动" promise was quietly broken by a memory click.
+    /// </summary>
+    private void RequestRefreshForVisibleView()
+    {
+        if (_currentView == View.Memory)
+        {
+            _coordinator.RequestMemoryRefresh();
+            ApplyRefreshAffordance();
+            return;
+        }
+
+        _coordinator.RequestManualRefreshAll();
+    }
+
+    /// <summary>
+    /// Keeps the refresh button's meaning, enabled state and accessible name in step with the
+    /// visible page. While a memory read is running the button is disabled rather than queued —
+    /// a second click cannot ask for a second sample, and the chart keeps showing the last one.
+    /// </summary>
+    private void ApplyRefreshAffordance()
+    {
+        if (IsDisposed) return;
+
+        var onMemoryPage = _currentView == View.Memory;
+        var text = onMemoryPage ? L("monitor.refresh_memory") : L("monitor.refresh_all");
+        if (!_coordinator.Settings.MemoryEnabled) text = onMemoryPage ? L("monitor.refresh_memory_off") : text;
+
+        _refreshButton.Enabled = !onMemoryPage
+            || (_coordinator.Settings.MemoryEnabled && !_coordinator.MemoryRefreshInFlight);
+        _refreshButton.AccessibleName = text;
+        _toolTip.SetToolTip(_refreshButton, text);
     }
 
     /// <summary>Positions the two text tabs and the accent underline from the CURRENT text
@@ -1417,7 +1456,8 @@ public sealed class MonitorForm : Form
             _memorySampledLabel.Text = L("monitor.memory_sampled", "—");
         }
 
-        _trendChart.SetSamples(_coordinator.MemoryHistory.Snapshot());
+        _trendChart.SetSamples(_coordinator.MemoryHistory.SnapshotWithVersion());
+        ApplyRefreshAffordance();
     }
 
     // ---------- settings view ----------
@@ -1747,8 +1787,7 @@ public sealed class MonitorForm : Form
         private const int GapBreakThresholdSeconds = 15;
         private const int MaxDrawPoints = 240;
 
-        private int _lastSampleCount = -1;
-        private DateTimeOffset _lastSampleStamp;
+        private long _lastSnapshotVersion = -1;
         private Pen? _linePen;
 
         public MemoryTrendChart()
@@ -1758,18 +1797,19 @@ public sealed class MonitorForm : Form
         }
 
         /// <summary>
-        /// Assigns samples and repaints — SKIPPED entirely when nothing changed (same
-        /// count and same last stamp). The coordinator samples every 5 s and events fire
-        /// on every view switch; repainting 720-point curves for identical data was pure
-        /// waste on the UI thread.
+        /// Assigns samples and repaints — skipped when the history has not changed.
+        /// <para>
+        /// Keyed on the buffer's version, not on "count plus newest timestamp": a sample that
+        /// corrects an earlier one at the same instant leaves both of those unchanged, so the old
+        /// key kept serving a curve that no longer matched the data.
+        /// </para>
         /// </summary>
-        public void SetSamples(MemorySample[] samples)
+        public void SetSamples(MemoryHistorySnapshot snapshot)
         {
-            var last = samples.Length > 0 ? samples[^1].SampledAtUtc : DateTimeOffset.MinValue;
-            if (samples.Length == _lastSampleCount && last == _lastSampleStamp) return;
-            _lastSampleCount = samples.Length;
-            _lastSampleStamp = last;
-            Samples = samples;
+            ArgumentNullException.ThrowIfNull(snapshot);
+            if (snapshot.Version == _lastSnapshotVersion) return;
+            _lastSnapshotVersion = snapshot.Version;
+            Samples = [.. snapshot.Samples];
             Invalidate();
         }
 
