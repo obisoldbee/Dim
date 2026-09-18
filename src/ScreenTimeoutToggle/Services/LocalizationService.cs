@@ -1,4 +1,4 @@
-namespace OBDim.Services;
+﻿namespace OBDim.Services;
 
 /// <summary>
 /// Lightweight internationalization service using in-memory dictionaries.
@@ -206,6 +206,8 @@ public static class LocalizationService
             ["monitor.range_2h"] = "2 小时",
             ["monitor.trend_title_range"] = "最近 {0}趋势",
             ["monitor.trend_gap_no_samples"] = "该时段无采样",
+            ["monitor.headline_physical"] = "占物理总量 {0}",
+            ["monitor.headline_commit"] = "占提交上限 {0}",
             ["monitor.refresh_memory"] = "刷新内存采样",
             ["monitor.refresh_memory_off"] = "内存监控已关闭，无法刷新",
             ["monitor.error.cli_not_installed"] = "未找到 CLI，请安装或在监控设置中指定路径",
@@ -423,6 +425,8 @@ public static class LocalizationService
             ["monitor.range_2h"] = "2 hr",
             ["monitor.trend_title_range"] = "Trend, last {0}",
             ["monitor.trend_gap_no_samples"] = "No samples in this period",
+            ["monitor.headline_physical"] = "{0} of physical total",
+            ["monitor.headline_commit"] = "{0} of commit limit",
             ["monitor.refresh_memory"] = "Refresh memory sample",
             ["monitor.refresh_memory_off"] = "Memory monitoring is off, so there is nothing to refresh",
             ["monitor.error.cli_not_installed"] = "CLI not found — install it or set the path in monitoring settings",

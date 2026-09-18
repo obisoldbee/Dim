@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -8,6 +8,8 @@ using OBDim.Monitoring.Models;
 using OBDim.Monitoring.Providers;
 using OBDim.Monitoring.Services;
 using OBDim.Services;
+using OBDim.UI.Memory;
+using static OBDim.UI.UiPalette;
 
 namespace OBDim.UI;
 
@@ -90,12 +92,27 @@ public sealed class MonitorForm : Form
         return image;
     }
 
-    // Memory view controls
+    // Memory view controls. The page is one chart plus a fixed six-field table: switching metric
+    // changes only the series, so the figures that are always true stay on screen either way.
     private readonly Label _memoryStateLabel = new();
     private readonly Label _memorySampledLabel = new();
+    private readonly Label _memoryHeadline = new();
+    private readonly Label _memoryHeadlineNote = new();
     private readonly Label[,] _memoryStats = new Label[3, 2];
-    private readonly MemoryTrendChart _trendChart = new();
+    private readonly MemoryTrendPanel _trendChart = new();
+    private readonly Button _metricPhysicalButton = new();
+    private readonly Button _metricCommitButton = new();
+    private readonly Button[] _rangeButtons = [new(), new(), new(), new(), new()];
     private readonly Button _taskManagerButton = new();
+
+    private static readonly MemoryTrendRange[] RangeOrder =
+    [
+        MemoryTrendRange.Minute1, MemoryTrendRange.Minute10, MemoryTrendRange.Minute30,
+        MemoryTrendRange.Hour1, MemoryTrendRange.Hour2,
+    ];
+
+    private readonly Font _headlineFont = new("Microsoft YaHei UI", 21F, FontStyle.Bold);
+    private readonly Font _segmentFont = new("Microsoft YaHei UI", 8.5F);
 
     private readonly Font _tabRegularFont = new("Microsoft YaHei UI", 13.5F);
     private readonly Font _tabBoldFont = new("Microsoft YaHei UI", 13.5F, FontStyle.Bold);
@@ -104,23 +121,8 @@ public sealed class MonitorForm : Form
     private readonly Font _badgeFont = new("Microsoft YaHei UI", 7.5F);
     private readonly System.Windows.Forms.Timer _countdownTimer = new() { Interval = 30000 };
 
-    // Palette lifted from the reference handoff (windows-quota-reference.html :root).
-    private static readonly Color Accent = Color.FromArgb(0x14, 0x79, 0xFA);       // #1479fa
-    private static readonly Color BarGreen = Color.FromArgb(0x2A, 0xBD, 0x51);     // #2abd51
-    private static readonly Color BarAmber = Color.FromArgb(0xED, 0xB7, 0x28);     // #edb728
-    private static readonly Color BarRed = Color.FromArgb(0xFB, 0x30, 0x41);       // #fb3041
-    private static readonly Color CardBorder = Color.FromArgb(0xEB, 0xEB, 0xED);   // #ebebed
-    private static readonly Color TextStrong = Color.FromArgb(0x37, 0x39, 0x3D);   // #37393d
-    private static readonly Color TextPrimary = Color.FromArgb(0x49, 0x4B, 0x50);  // #494b50
-    private static readonly Color TextSecondary = Color.FromArgb(0x85, 0x86, 0x8B);// #85868b
-    private static readonly Color Hairline = Color.FromArgb(0xE9, 0xE9, 0xEB);     // #e9e9eb
-    private static readonly Color BadgeBack = Color.FromArgb(0xE9, 0xE9, 0xEB);    // #e9e9eb
-    private static readonly Color BadgeText = Color.FromArgb(0x77, 0x7A, 0x80);    // #777a80
-    private static readonly Color TrackBack = Color.FromArgb(0xF0, 0xF1, 0xF2);    // #f0f1f2
-    private static readonly Color SectionBack = Color.FromArgb(0xF4, 0xF4, 0xF5);  // #f4f4f5
-    private static readonly Color StaleText = Color.FromArgb(0x91, 0x67, 0x1D);    // #91671d
-    private static readonly Color UnlimitedBlue = Color.FromArgb(0x06, 0x73, 0xFF);// #0673ff
-    private static readonly Color PageBack = Color.White;
+    // Palette lives in UiPalette and arrives unqualified via `using static`, so the memory
+    // page's extracted controls and this form cannot drift apart.
 
     public MonitorForm(MonitoringCoordinator coordinator)
     {
@@ -203,7 +205,7 @@ public sealed class MonitorForm : Form
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
-        if (e.KeyCode == Keys.Escape)
+        if (e.KeyCode == Keys.Escape && !ChartOwnsKey(e.KeyCode))
         {
             Hide();
             e.Handled = true;
@@ -231,11 +233,13 @@ public sealed class MonitorForm : Form
 
     /// <summary>
     /// Tab / ← / → switch 额度↔内存 and 1/2/3 jump to a view — but only when the user is
-    /// not typing into a text/numeric field on the settings page.
+    /// not typing into a text/numeric field on the settings page, and never over the chart's
+    /// own arrow keys: there Left/Right walk the sampled points, which is the keyboard path to
+    /// a reading.
     /// </summary>
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
-        if (!IsTextInputActive())
+        if (!IsTextInputActive() && !ChartOwnsKey(keyData))
         {
             switch (keyData)
             {
@@ -257,6 +261,17 @@ public sealed class MonitorForm : Form
     }
 
     private bool IsTextInputActive() => ActiveControl is TextBox or NumericUpDown or ComboBox;
+
+    /// <summary>
+    /// True when the chart has focus and the key belongs to it. Escape is shared: the first press
+    /// retires the chart's reading, and only once nothing is showing does it dismiss the popover.
+    /// </summary>
+    internal bool ChartOwnsKey(Keys keyData) => keyData switch
+    {
+        Keys.Left or Keys.Right or Keys.Home or Keys.End => ActiveControl is MemoryTrendPanel,
+        Keys.Escape => ActiveControl is MemoryTrendPanel { HasReading: true },
+        _ => false,
+    };
 
     /// <summary>
     /// Positions the popover against its tray icon (Shell_NotifyIconGetRect via the
@@ -1310,12 +1325,16 @@ public sealed class MonitorForm : Form
         _memoryView.Dock = DockStyle.Fill;
         _memoryView.Padding = new Padding(12, 6, 12, 12);
         _memoryView.BackColor = PageBack;
+        // A short work area scrolls vertically rather than squeezing the chart into a few
+        // pixels; the task-manager entry stays reachable. Horizontal scrolling never applies.
+        _memoryView.AutoScroll = true;
 
         var card = new CardPanel
         {
             Dock = DockStyle.Fill,
             BackColor = Color.White,
             Padding = new Padding(14, 12, 14, 12),
+            MinimumSize = new Size(0, S(432)),
         };
 
         var layout = new TableLayoutPanel
@@ -1330,6 +1349,72 @@ public sealed class MonitorForm : Form
         _memoryStateLabel.Font = new Font(Font, FontStyle.Bold);
         _memoryStateLabel.Margin = new Padding(0, 0, 0, 8);
 
+        // ---- headline row: the selected figure, and the physical/commit switch ----
+        var headlineRow = NewTwoColumnRow();
+
+        var headlineStack = new TableLayoutPanel
+        {
+            ColumnCount = 1,
+            RowCount = 2,
+            AutoSize = true,
+            BackColor = Color.White,
+            Dock = DockStyle.Left,
+        };
+        headlineStack.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        headlineStack.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        headlineStack.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        _memoryHeadline.AutoSize = true;
+        _memoryHeadline.Font = _headlineFont;
+        _memoryHeadline.ForeColor = TextStrong;
+        _memoryHeadline.Margin = new Padding(0);
+        _memoryHeadlineNote.AutoSize = true;
+        _memoryHeadlineNote.Font = new Font(Font.FontFamily, 8.5F);
+        _memoryHeadlineNote.ForeColor = TextSecondary;
+        _memoryHeadlineNote.Margin = new Padding(0);
+        headlineStack.Controls.Add(_memoryHeadline, 0, 0);
+        headlineStack.Controls.Add(_memoryHeadlineNote, 0, 1);
+
+        var switcher = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            WrapContents = false,
+            FlowDirection = FlowDirection.LeftToRight,
+            BackColor = Color.White,
+            Dock = DockStyle.Right,
+            Margin = new Padding(0, 6, 0, 0),
+        };
+        StyleSegment(_metricPhysicalButton);
+        StyleSegment(_metricCommitButton);
+        _metricPhysicalButton.Font = _segmentFont;
+        _metricCommitButton.Font = _segmentFont;
+        _metricPhysicalButton.Click += (_, _) => _trendChart.Metric = MemoryTrendMetric.PhysicalUsed;
+        _metricCommitButton.Click += (_, _) => _trendChart.Metric = MemoryTrendMetric.Commit;
+        switcher.Controls.Add(_metricPhysicalButton);
+        switcher.Controls.Add(_metricCommitButton);
+
+        headlineRow.Controls.Add(headlineStack, 0, 0);
+        headlineRow.Controls.Add(switcher, 1, 0);
+
+        // ---- range row: five windows over the same stored history ----
+        var rangeRow = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            WrapContents = false,
+            Dock = DockStyle.Top,
+            BackColor = Color.White,
+            Margin = new Padding(0, 0, 0, 4),
+        };
+        for (var i = 0; i < _rangeButtons.Length; i++)
+        {
+            var index = i;
+            StyleSegment(_rangeButtons[index]);
+            _rangeButtons[index].Font = _segmentFont;
+            _rangeButtons[index].Click += (_, _) => _trendChart.Range = RangeOrder[index];
+            rangeRow.Controls.Add(_rangeButtons[index]);
+        }
+
+        // ---- six-field table: left column physical, right column commit ----
         var statsGrid = new TableLayoutPanel
         {
             ColumnCount = 2,
@@ -1365,6 +1450,8 @@ public sealed class MonitorForm : Form
 
         _trendChart.Dock = DockStyle.Fill;
         _trendChart.Margin = new Padding(0, 0, 0, 8);
+        _trendChart.MinimumSize = new Size(0, S(120));
+        _trendChart.SelectionChanged += ApplyMemorySelection;
 
         _taskManagerButton.AutoSize = true;
         _taskManagerButton.FlatStyle = FlatStyle.Flat;
@@ -1384,19 +1471,127 @@ public sealed class MonitorForm : Form
             }
         };
 
+        var footerRow = NewTwoColumnRow();
+        var footerRight = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            WrapContents = false,
+            BackColor = Color.White,
+            Dock = DockStyle.Right,
+        };
+        footerRight.Controls.Add(_taskManagerButton);
+        footerRow.Controls.Add(_memorySampledLabel, 0, 0);
+        footerRow.Controls.Add(footerRight, 1, 0);
+
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.Controls.Add(_memoryStateLabel, 0, 0);
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.Controls.Add(statsGrid, 0, 1);
+        layout.Controls.Add(headlineRow, 0, 1);
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.Controls.Add(_memorySampledLabel, 0, 2);
+        layout.Controls.Add(rangeRow, 0, 2);
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.Controls.Add(_trendChart, 0, 3);
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.Controls.Add(_taskManagerButton, 0, 4);
+        layout.Controls.Add(statsGrid, 0, 4);
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.Controls.Add(footerRow, 0, 5);
 
         card.Controls.Add(layout);
         _memoryView.Controls.Add(card);
+    }
+
+    /// <summary>A one-row, two-column container: a stretched left cell and a right-aligned one.</summary>
+    private static TableLayoutPanel NewTwoColumnRow()
+    {
+        var row = new TableLayoutPanel
+        {
+            ColumnCount = 2,
+            RowCount = 1,
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            BackColor = Color.White,
+            Margin = new Padding(0, 0, 0, 4),
+        };
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        return row;
+    }
+
+    /// <summary>
+    /// Segmented-control look for the metric and range switches. Font is NOT touched here: this
+    /// runs on every selection change, and allocating a Font per click is how GDI objects leak.
+    /// </summary>
+    private void StyleSegment(Button button)
+    {
+        button.FlatStyle = FlatStyle.Flat;
+        button.FlatAppearance.BorderColor = CardBorder;
+        button.FlatAppearance.BorderSize = 1;
+        button.FlatAppearance.MouseOverBackColor = SectionBack;
+        button.AutoSize = true;
+        button.Padding = new Padding(S(7), S(2), S(7), S(2));
+        button.Margin = new Padding(0);
+        button.Cursor = Cursors.Hand;
+        button.TabStop = true;
+    }
+
+    /// <summary>Reflects the chart's selection onto the two switch groups and the titles.</summary>
+    private void ApplyMemorySelection()
+    {
+        if (IsDisposed) return;
+
+        PaintSegment(_metricPhysicalButton, _trendChart.Metric == MemoryTrendMetric.PhysicalUsed);
+        PaintSegment(_metricCommitButton, _trendChart.Metric == MemoryTrendMetric.Commit);
+        for (var i = 0; i < _rangeButtons.Length; i++)
+        {
+            PaintSegment(_rangeButtons[i], _trendChart.Range == RangeOrder[i]);
+        }
+
+        _trendChart.Title = L("monitor.trend_title_range", RangeLabel(_trendChart.Range));
+        _metricPhysicalButton.AccessibleName = L("monitor.metric_physical");
+        _metricCommitButton.AccessibleName = L("monitor.metric_commit");
+        UpdateMemoryHeadline();
+    }
+
+    private static void PaintSegment(Button button, bool selected)
+    {
+        button.BackColor = selected ? Accent : Color.White;
+        button.ForeColor = selected ? Color.White : TextSecondary;
+    }
+
+    private static string RangeLabel(MemoryTrendRange range) => L(range switch
+    {
+        MemoryTrendRange.Minute1 => "monitor.range_1m",
+        MemoryTrendRange.Minute10 => "monitor.range_10m",
+        MemoryTrendRange.Minute30 => "monitor.range_30m",
+        MemoryTrendRange.Hour1 => "monitor.range_1h",
+        MemoryTrendRange.Hour2 => "monitor.range_2h",
+        _ => "monitor.range_1h",
+    });
+
+    /// <summary>
+    /// The headline is the selected metric's own figure and its own denominator, both taken from
+    /// the same sample: 物理 uses used/total and 提交 uses committed/limit. Summing or stacking the
+    /// two would imply they measure the same pool.
+    /// </summary>
+    private void UpdateMemoryHeadline()
+    {
+        if (IsDisposed) return;
+
+        var point = _trendChart.CurrentPoint;
+        if (point is null)
+        {
+            _memoryHeadline.Text = "—";
+            _memoryHeadlineNote.Text = L("monitor.not_provided");
+            _memoryHeadline.ForeColor = TextSecondary;
+            return;
+        }
+
+        var percent = (double)point.Value.Value / point.Value.Capacity * 100.0;
+        _memoryHeadline.Text = FormatBytes(point.Value.Value);
+        _memoryHeadline.ForeColor = _trendChart.Stale ? BarAmber : TextStrong;
+        _memoryHeadlineNote.Text = L(
+            _trendChart.Metric == MemoryTrendMetric.PhysicalUsed ? "monitor.headline_physical" : "monitor.headline_commit",
+            percent.ToString("0.#") + "%");
     }
 
     private void UpdateMemoryView()
@@ -1428,20 +1623,22 @@ public sealed class MonitorForm : Form
             _memoryStateLabel.ForeColor = SystemColors.ControlText;
         }
 
-        // Stat grid: 左列物理、右列提交/信号 (Windows 机制，不仿造 macOS 压力指标).
+        // Left column physical, right column commit. Nothing here is a "health score": an
+        // un-triggered low-memory signal is one fact about one notification, not a verdict.
         if (sample is not null)
         {
             _memoryStats[0, 0].Text = $"{L("monitor.memory.stat_physical")}  {FormatBytes(sample.PhysicalTotalBytes)}";
-            _memoryStats[0, 1].Text = $"{L("monitor.memory.stat_commit")}  {FormatBytes(sample.CommitTotalBytes)}";
             _memoryStats[1, 0].Text = $"{L("monitor.memory.stat_used")}  {FormatBytes(sample.PhysicalUsedBytes)}";
-            _memoryStats[1, 1].Text = $"{L("monitor.memory.stat_commit_limit")}  {FormatBytes(sample.CommitLimitBytes)}";
             _memoryStats[2, 0].Text = $"{L("monitor.memory.stat_available")}  {FormatBytes(sample.PhysicalAvailableBytes)}";
+            _memoryStats[0, 1].Text = $"{L("monitor.memory.stat_commit")}  {FormatBytes(sample.CommitTotalBytes)}";
+            _memoryStats[1, 1].Text = $"{L("monitor.memory.stat_commit_limit")}  {FormatBytes(sample.CommitLimitBytes)}";
             _memoryStats[2, 1].Text = $"{L("monitor.memory.stat_low_signal")}  {sample.LowMemorySignal switch
             {
                 true => L("monitor.low_triggered"),
                 false => L("monitor.low_not_triggered"),
                 null => L("monitor.low_unknown"),
             }}";
+            _memoryStats[2, 1].ForeColor = sample.LowMemorySignal == true ? BarAmber : SystemColors.ControlText;
             _memorySampledLabel.Text = L("monitor.memory_sampled", FormatTime(sample.SampledAtUtc));
         }
         else
@@ -1451,12 +1648,14 @@ public sealed class MonitorForm : Form
                 for (var col = 0; col < 2; col++)
                 {
                     _memoryStats[row, col].Text = L("monitor.not_provided");
+                    _memoryStats[row, col].ForeColor = SystemColors.ControlText;
                 }
             }
             _memorySampledLabel.Text = L("monitor.memory_sampled", "—");
         }
 
-        _trendChart.SetSamples(_coordinator.MemoryHistory.SnapshotWithVersion());
+        _trendChart.Apply(_coordinator.MemoryHistory.SnapshotWithVersion(), stale);
+        UpdateMemoryHeadline();
         ApplyRefreshAffordance();
     }
 
@@ -1472,9 +1671,16 @@ public sealed class MonitorForm : Form
         _refreshButton.Text = "⟳";
         _settingsButton.Text = "⚙";
         _taskManagerButton.Text = L("monitor.open_task_manager");
-        _trendChart.Title = L("monitor.trend_title");
-        _trendChart.SeriesNames = (L("monitor.trend_physical"), L("monitor.trend_commit"));
+        _metricPhysicalButton.Text = L("monitor.metric_physical");
+        _metricCommitButton.Text = L("monitor.metric_commit");
+        for (var i = 0; i < _rangeButtons.Length; i++)
+        {
+            _rangeButtons[i].Text = RangeLabel(RangeOrder[i]);
+            _rangeButtons[i].AccessibleName = RangeLabel(RangeOrder[i]);
+        }
         _trendChart.EmptyText = L("monitor.trend_no_data");
+        _trendChart.NoSamplesText = L("monitor.trend_gap_no_samples");
+        _trendChart.AccessibleName = L("monitor.tab_memory");
         foreach (ProviderId id in Enum.GetValues<ProviderId>())
         {
             if (_cardTitles.TryGetValue(id, out var title))
@@ -1483,6 +1689,8 @@ public sealed class MonitorForm : Form
             }
         }
         LayoutTabs();
+        ApplyMemorySelection();
+        _trendChart.RebuildGeometry();
     }
 
     // ---------- statics shared with tests / tray ----------
@@ -1772,171 +1980,4 @@ public sealed class MonitorForm : Form
         }
     }
 
-    /// <summary>
-    /// Draws the one-hour trend as TWO stacked area charts — physical available and commit —
-    /// each with its own byte scale. They never share a unitless axis (spec §6). Missing
-    /// samples (sleep, disabled sampling) break the line instead of being interpolated.
-    /// </summary>
-    internal sealed class MemoryTrendChart : Panel
-    {
-        public MemorySample[] Samples { get; set; } = [];
-        public string Title { get; set; } = "";
-        public (string Physical, string Commit) SeriesNames { get; set; } = ("", "");
-        public string EmptyText { get; set; } = "";
-
-        private const int GapBreakThresholdSeconds = 15;
-        private const int MaxDrawPoints = 240;
-
-        private long _lastSnapshotVersion = -1;
-        private Pen? _linePen;
-
-        public MemoryTrendChart()
-        {
-            DoubleBuffered = true;
-            BackColor = Color.White;
-        }
-
-        /// <summary>
-        /// Assigns samples and repaints — skipped when the history has not changed.
-        /// <para>
-        /// Keyed on the buffer's version, not on "count plus newest timestamp": a sample that
-        /// corrects an earlier one at the same instant leaves both of those unchanged, so the old
-        /// key kept serving a curve that no longer matched the data.
-        /// </para>
-        /// </summary>
-        public void SetSamples(MemoryHistorySnapshot snapshot)
-        {
-            ArgumentNullException.ThrowIfNull(snapshot);
-            if (snapshot.Version == _lastSnapshotVersion) return;
-            _lastSnapshotVersion = snapshot.Version;
-            Samples = [.. snapshot.Samples];
-            Invalidate();
-        }
-
-        /// <summary>Releases the cached pen — a Pen holds a GDI handle, so caching it is
-        /// only safe while the control also owns its disposal.</summary>
-        protected override void Dispose(bool disposing)
-        {
-            if (disposing)
-            {
-                _linePen?.Dispose();
-                _linePen = null;
-            }
-            base.Dispose(disposing);
-        }
-
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            base.OnPaint(e);
-            var g = e.Graphics;
-            g.Clear(BackColor);
-
-            var textBrush = SystemBrushes.ControlText;
-            using var titleFont = new Font(Font, FontStyle.Bold);
-            g.DrawString(Title, titleFont, textBrush, 4, 2);
-
-            var chartTop = 24;
-            var chartHeight = (Height - chartTop - 24) / 2 - 6;
-            if (chartHeight < 30 || Samples.Length == 0)
-            {
-                g.DrawString(EmptyText, Font, textBrush, 4, chartTop + 8);
-                return;
-            }
-
-            _linePen ??= new Pen(Accent, 1.6f);
-            DrawSeries(g, chartTop, chartHeight, s => (double)s.PhysicalAvailableBytes, SeriesNames.Physical);
-            DrawSeries(g, chartTop + chartHeight + 12, chartHeight, s => (double)s.CommitTotalBytes, SeriesNames.Commit);
-        }
-
-        private void DrawSeries(Graphics g, int top, int height, Func<MemorySample, double> value, string name)
-        {
-            var bounds = new Rectangle(52, top, Width - 64, height);
-            using var borderPen = new Pen(CardBorder);
-            g.DrawRectangle(borderPen, bounds);
-
-            var now = DateTimeOffset.UtcNow;
-            var windowStart = now.AddHours(-1);
-
-            // Downsample: GDI+ happily draws 720 points but the per-point cost adds up at
-            // 150% DPI with two repaints per second-class interaction; 240 points is far
-            // past visual resolution for a 1-hour chart. The LAST sample is always kept.
-            var relevant = Samples.Where(s => s.SampledAtUtc >= windowStart).ToList();
-            List<MemorySample> points;
-            if (relevant.Count > MaxDrawPoints)
-            {
-                var stride = (int)Math.Ceiling(relevant.Count / (double)MaxDrawPoints);
-                points = [];
-                for (var i = 0; i < relevant.Count; i += stride) points.Add(relevant[i]);
-                if (points[^1] != relevant[^1]) points.Add(relevant[^1]);
-            }
-            else
-            {
-                points = relevant;
-            }
-
-            double min = double.MaxValue, max = double.MinValue;
-            foreach (var s in points)
-            {
-                var v = value(s);
-                if (v < min) min = v;
-                if (v > max) max = v;
-            }
-            if (min > max)
-            {
-                return;
-            }
-            if (max - min < 1)
-            {
-                max = min + 1;
-            }
-            var pad = (max - min) * 0.08;
-            min = Math.Max(0, min - pad);
-            max += pad;
-
-            float X(DateTimeOffset t) => bounds.Left + (float)((t - windowStart) / TimeSpan.FromHours(1)) * bounds.Width;
-            float Y(double v) => bounds.Bottom - (float)((v - min) / (max - min)) * bounds.Height;
-
-            var previous = default(MemorySample);
-            var segments = new List<List<PointF>>();
-            var current = new List<PointF>();
-            foreach (var s in points)
-            {
-                if (previous is not null &&
-                    (s.SampledAtUtc - previous.SampledAtUtc).TotalSeconds > GapBreakThresholdSeconds)
-                {
-                    if (current.Count > 1) segments.Add(current);
-                    current = [];
-                }
-                current.Add(new PointF(X(s.SampledAtUtc), Y(value(s))));
-                previous = s;
-            }
-            if (current.Count > 1) segments.Add(current);
-
-            foreach (var segment in segments)
-            {
-                g.DrawLines(_linePen!, [.. segment]);
-
-                // Soft area fill under the curve.
-                var fillPoints = new List<PointF>(segment)
-                {
-                    new(segment[^1].X, bounds.Bottom),
-                    new(segment[0].X, bounds.Bottom),
-                };
-                using var fillBrush = new LinearGradientBrush(
-                    new RectangleF(bounds.Left, top, bounds.Width, height),
-                    Color.FromArgb(40, Accent), Color.FromArgb(8, Accent), LinearGradientMode.Vertical);
-                g.FillPolygon(fillBrush, [.. fillPoints]);
-
-                // A lone sample (fresh start) would otherwise render as an empty chart.
-                var lastPoint = segment[^1];
-                using var dotBrush = new SolidBrush(Accent);
-                g.FillEllipse(dotBrush, lastPoint.X - 3, lastPoint.Y - 3, 6, 6);
-            }
-
-            // Axis labels: min/max of THIS series only, in bytes — never a shared unitless axis.
-            g.DrawString(FormatBytes((ulong)max), Font, SystemBrushes.ControlText, 2, top - 2);
-            g.DrawString(FormatBytes((ulong)Math.Max(0, min)), Font, SystemBrushes.ControlText, 2, bounds.Bottom - 14);
-            g.DrawString(name, Font, SystemBrushes.ControlText, bounds.Left + 4, top + 2);
-        }
-    }
 }
