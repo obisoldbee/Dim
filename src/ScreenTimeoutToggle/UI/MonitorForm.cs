@@ -41,6 +41,7 @@ public sealed class MonitorForm : Form
 
     // Views
     private readonly FlowLayoutPanel _quotaView = new();
+    private readonly Label _quotaHint = new();
     private readonly Panel _memoryView = new();
 
     // Quota cards (one per provider)
@@ -581,6 +582,14 @@ public sealed class MonitorForm : Form
         _quotaView.AutoScroll = true;
         _quotaView.Padding = new Padding(16);
 
+        // With every source switched off the page would otherwise be blank with no clue why.
+        // One line is cheaper than one card per provider.
+        _quotaHint.AutoSize = true;
+        _quotaHint.ForeColor = TextSecondary;
+        _quotaHint.Margin = new Padding(0, 0, 0, 12);
+        _quotaHint.Name = "quotaAllDisabledHint";
+        _quotaView.Controls.Add(_quotaHint);
+
         foreach (ProviderId id in Enum.GetValues<ProviderId>())
         {
             var card = new CardPanel
@@ -739,11 +748,25 @@ public sealed class MonitorForm : Form
         {
             UpdateCard(state);
         }
+
+        _quotaHint.Visible = _cards.Values.All(c => !c.Visible);
     }
 
     private void UpdateCard(ProviderDisplayState state)
     {
         var card = _cards[state.Provider];
+
+        // A provider the user switched off has nothing to report, so it renders nothing: no card,
+        // no measured status text, no row pass. Flow layout skips hidden controls, so the cards
+        // that do carry data move up without leaving a gap.
+        if (!state.Enabled)
+        {
+            card.Visible = false;
+            ReleaseCardRows(state.Provider);
+            return;
+        }
+
+        card.Visible = true;
         var title = _cardTitles[state.Provider];
         var badge = _cardBadges[state.Provider];
         var updated = _cardUpdated[state.Provider];
@@ -778,11 +801,10 @@ public sealed class MonitorForm : Form
         _toolTip.SetToolTip(badge,snapshot?.PlanTierIsInferred==true
             ? (LocalizationService.CurrentLanguage=="en-US"?"Inferred from validated daily video entitlement (minimax-video-daily-v1).":"依据视频每日权益推断（minimax-video-daily-v1），不是接口直接返回的套餐名。") : "");
 
-        // Status line BELOW the header rule, only for facts the user must know —
-        // failure, staleness, disabled, paused, or nothing fetched yet. A healthy
-        // card shows no status line at all.
+        // Status line BELOW the header rule, only for facts the user must know — failure,
+        // staleness, paused, or nothing fetched yet. A healthy card shows no status line at
+        // all, and a switched-off provider never reaches this code.
         var parts = new List<string>();
-        if (!state.Enabled) parts.Add(L("monitor.state_disabled") + " · " + L("monitor.state_disabled_hint"));
         if(state.Authenticating) parts.Add(ProviderStatusPresentation.Connection(state,LocalizationService.CurrentLanguage=="en-US").Detail);
         if (hasFailure)
         {
@@ -791,8 +813,8 @@ public sealed class MonitorForm : Form
             parts.Add(LocalizationService.CurrentLanguage=="en-US"?"Click here to resolve / retry.":"点击此处处理／重试。");
         }
         if (state.Stale) parts.Add(L("monitor.state_stale"));
-        if (state.PausedUntilUserRetry && state.Enabled) parts.Add(L("monitor.paused_short"));
-        if (state.Enabled && snapshot is null && !hasFailure) parts.Add(L("monitor.state_no_data_yet"));
+        if (state.PausedUntilUserRetry) parts.Add(L("monitor.paused_short"));
+        if (snapshot is null && !hasFailure) parts.Add(L("monitor.state_no_data_yet"));
         statusLabel.Text = string.Join(" · ", parts);
         var showStatus = parts.Count > 0;
         statusLabel.Visible = showStatus;
@@ -826,14 +848,10 @@ public sealed class MonitorForm : Form
         // refresh and a structural rebuild (see RowDesc note).
         var rows = new List<RowDesc>();
 
-        if (!state.Enabled)
+        if (snapshot is null)
         {
-            // The status line under the header carries the whole message (disabled +
-            // hint); an inert card renders no metric rows at all.
-        }
-        else if (snapshot is null)
-        {
-            // Same — "尚未获取数据" or the failure reason is already on the status line.
+            // Nothing to tabulate yet — "尚未获取数据" or the failure reason is already on
+            // the status line.
         }
         else
         {
@@ -1026,6 +1044,34 @@ public sealed class MonitorForm : Form
     /// otherwise an in-place text/brush refresh on the existing controls. This is what
     /// keeps clicks and refresh cycles from rebuilding dozens of controls each time.
     /// </summary>
+    /// <summary>
+    /// Hands back the row controls a card was holding. Hiding the card is not enough on its own:
+    /// the controls, their fonts and their GDI handles would stay alive for a source the user
+    /// switched off, which is the cost this change is meant to remove.
+    /// </summary>
+    private void ReleaseCardRows(ProviderId id)
+    {
+        if (!_cardRowControls.TryGetValue(id, out var held) || held.Count == 0) return;
+        var rowsPanel = _cardRows[id];
+        _quotaView.SuspendLayout();
+        rowsPanel.SuspendLayout();
+        try
+        {
+            foreach (var row in held)
+            {
+                rowsPanel.Controls.Remove(row);
+                row.Dispose();
+                RowsDisposed++;
+            }
+        }
+        finally
+        {
+            rowsPanel.ResumeLayout(true);
+            _quotaView.ResumeLayout(true);
+        }
+        _cardRowControls[id] = [];
+    }
+
     private void ApplyCardRows(ProviderId id, FlowLayoutPanel rowsPanel, List<RowDesc> rows)
     {
         var existing = _cardRowControls.GetValueOrDefault(id) ?? [];
@@ -1670,6 +1716,7 @@ public sealed class MonitorForm : Form
         _memorySegment.Text = L("monitor.tab_memory");
         _refreshButton.Text = "⟳";
         _settingsButton.Text = "⚙";
+        _quotaHint.Text = L("monitor.quota_all_disabled");
         _taskManagerButton.Text = L("monitor.open_task_manager");
         _metricPhysicalButton.Text = L("monitor.metric_physical");
         _metricCommitButton.Text = L("monitor.metric_commit");
