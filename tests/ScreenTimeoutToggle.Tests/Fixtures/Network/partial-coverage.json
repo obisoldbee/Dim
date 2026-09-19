@@ -1,0 +1,102 @@
+{
+  "schemaVersion": 1,
+  "origin": "fixture",
+  "asOf": 1789905600000,
+  "captureStartedAt": 1789902000000,
+  "epoch": 0,
+  "sequence": 77,
+  "coverage": "partial",
+  "coverageReasons": ["etw-unavailable"],
+  "capabilities": { "observe": true, "block": false, "terminate": false, "permissions": true },
+  "droppedEvents": 150,
+  "truncated": false,
+  "apps": [
+    {
+      "id": "app-a",
+      "name": "AppA Browser",
+      "bundleId": null,
+      "path": "C:\\Apps\\AppA\\appA.exe",
+      "identitySource": "executable-path",
+      "uploadBytes": null,
+      "downloadBytes": null,
+      "upRate": null,
+      "downRate": null,
+      "connectionCount": null,
+      "epoch": 0,
+      "connections": [],
+      "history": [
+        { "t": 1789905598000, "up": null, "down": null },
+        { "t": 1789905599000, "up": null, "down": null },
+        { "t": 1789905600000, "up": null, "down": null }
+      ],
+      "processes": [
+        {
+          "pid": 4124,
+          "startTime": 1789902100000,
+          "name": "appA.exe",
+          "parentPid": 800,
+          "executablePath": "C:\\Apps\\AppA\\appA.exe"
+        }
+      ]
+    },
+    {
+      "id": "app-b",
+      "name": "AppB Sync",
+      "bundleId": null,
+      "path": "C:\\Apps\\AppB\\appB.exe",
+      "identitySource": "executable-path",
+      "uploadBytes": 8388608,
+      "downloadBytes": 5242880,
+      "upRate": 0,
+      "downRate": 1024,
+      "connectionCount": 1,
+      "epoch": 0,
+      "connections": [
+        {
+          "id": "app-b/tcp/203.0.113.20:8443/down",
+          "startedAt": 1789903000000,
+          "direction": "down",
+          "initiator": "remote",
+          "hostname": "sync-b.example",
+          "ip": "203.0.113.20",
+          "port": 8443,
+          "protocol": "TCP",
+          "bytes": null,
+          "domainSource": "system",
+          "route": "sync-b.example (203.0.113.20)",
+          "proxyFlowId": null,
+          "state": "ESTABLISHED"
+        }
+      ],
+      "history": [
+        { "t": 1789905599000, "up": 0, "down": 1020 },
+        { "t": 1789905600000, "up": 0, "down": 1024 }
+      ],
+      "processes": [
+        {
+          "pid": 6212,
+          "startTime": 1789902200000,
+          "name": "appB.exe",
+          "parentPid": 800,
+          "executablePath": "C:\\Apps\\AppB\\appB.exe"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "{1A2B3C4D-0000-4000-8000-ETH0OBDIM001}",
+      "name": "Ethernet0",
+      "kind": "physical",
+      "upRate": 51200,
+      "downRate": 150000,
+      "rxBytes": 312115508,
+      "txBytes": 20204321,
+      "epoch": 0,
+      "history": [
+        { "t": 1789905599000, "up": 51100, "down": 149600 },
+        { "t": 1789905600000, "up": 51200, "down": 150000 }
+      ]
+    }
+  ]
+}

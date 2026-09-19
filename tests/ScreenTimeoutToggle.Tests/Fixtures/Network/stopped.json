@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "origin": "fixture",
+  "asOf": 1789905600000,
+  "captureStartedAt": 1789902000000,
+  "epoch": 0,
+  "sequence": 120,
+  "coverage": "stopped",
+  "coverageReasons": ["user-disabled"],
+  "capabilities": { "observe": true, "block": false, "terminate": false, "permissions": true },
+  "droppedEvents": null,
+  "truncated": false,
+  "apps": [],
+  "interfaces": []
+}

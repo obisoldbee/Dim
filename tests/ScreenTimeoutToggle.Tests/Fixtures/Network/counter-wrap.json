@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "origin": "fixture",
+  "asOf": 1789905600000,
+  "captureStartedAt": 1789902000000,
+  "epoch": 0,
+  "sequence": 87,
+  "coverage": "active",
+  "coverageReasons": [],
+  "capabilities": { "observe": true, "block": false, "terminate": false, "permissions": true },
+  "droppedEvents": 0,
+  "truncated": false,
+  "apps": [
+    {
+      "id": "app-a",
+      "name": "AppA Browser",
+      "bundleId": null,
+      "path": "C:\\Apps\\AppA\\appA.exe",
+      "identitySource": "executable-path",
+      "uploadBytes": 15204321,
+      "downloadBytes": 203115508,
+      "upRate": 45200.5,
+      "downRate": 128000,
+      "connectionCount": 1,
+      "epoch": 0,
+      "connections": [
+        {
+          "id": "app-a/tcp/203.0.113.10:443/up",
+          "startedAt": 1789902400000,
+          "direction": "up",
+          "initiator": "local",
+          "hostname": "app-a.example",
+          "ip": "203.0.113.10",
+          "port": 443,
+          "protocol": "TCP",
+          "bytes": 12004321,
+          "domainSource": "system",
+          "route": "app-a.example (203.0.113.10)",
+          "proxyFlowId": null,
+          "state": "ESTABLISHED"
+        }
+      ],
+      "history": [
+        { "t": 1789905599000, "up": 45120, "down": 127900 },
+        { "t": 1789905600000, "up": 45200.5, "down": 128000 }
+      ],
+      "processes": [
+        {
+          "pid": 4124,
+          "startTime": 1789902100000,
+          "name": "appA.exe",
+          "parentPid": 800,
+          "executablePath": "C:\\Apps\\AppA\\appA.exe"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "{1A2B3C4D-0000-4000-8000-ETH0OBDIM001}",
+      "name": "Ethernet0",
+      "kind": "physical",
+      "upRate": 51200,
+      "downRate": 150000,
+      "rxBytes": 15234567,
+      "txBytes": 8123456,
+      "epoch": 1,
+      "history": [
+        { "t": 1789905596000, "up": 50500, "down": 148000 },
+        { "t": 1789905597000, "up": 50800, "down": 148800 },
+        { "t": 1789905598000, "up": 51000, "down": 149200 },
+        { "t": 1789905599000, "up": 51100, "down": 149600 },
+        { "t": 1789905600000, "up": 51200, "down": 150000 }
+      ]
+    }
+  ]
+}

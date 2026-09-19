@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "origin": "fixture",
+  "asOf": 1789905600000,
+  "captureStartedAt": 1789905599000,
+  "epoch": 0,
+  "sequence": 1,
+  "coverage": "active",
+  "coverageReasons": [],
+  "capabilities": { "observe": true, "block": false, "terminate": false, "permissions": true },
+  "droppedEvents": 0,
+  "truncated": false,
+  "apps": [
+    {
+      "id": "app-s",
+      "name": "AppS OneShot",
+      "bundleId": null,
+      "path": "C:\\Apps\\AppS\\appS.exe",
+      "identitySource": "executable-path",
+      "uploadBytes": 1024,
+      "downloadBytes": null,
+      "upRate": 1024,
+      "downRate": null,
+      "connectionCount": 0,
+      "epoch": 0,
+      "connections": [],
+      "history": [
+        { "t": 1789905600000, "up": 1024, "down": null }
+      ],
+      "processes": [
+        {
+          "pid": 9912,
+          "startTime": 1789905599500,
+          "name": "appS.exe",
+          "parentPid": 800,
+          "executablePath": "C:\\Apps\\AppS\\appS.exe"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "{1A2B3C4D-0000-4000-8000-ETH0OBDIM001}",
+      "name": "Ethernet0",
+      "kind": "physical",
+      "upRate": 1024,
+      "downRate": 0,
+      "rxBytes": 0,
+      "txBytes": 1024,
+      "epoch": 0,
+      "history": [
+        { "t": 1789905600000, "up": 1024, "down": 0 }
+      ]
+    }
+  ]
+}

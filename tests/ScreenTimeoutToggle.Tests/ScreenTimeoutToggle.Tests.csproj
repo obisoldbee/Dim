@@ -24,4 +24,9 @@
     <None Include="Fixtures\Monitoring\*.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <!-- N0 frozen network contract fixtures: desensitized (TEST-NET-3, 2001:db8::/32, *.example). -->
+  <ItemGroup>
+    <None Include="Fixtures\Network\*.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

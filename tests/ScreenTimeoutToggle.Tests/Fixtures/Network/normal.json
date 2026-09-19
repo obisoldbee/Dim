@@ -1,0 +1,215 @@
+{
+  "schemaVersion": 1,
+  "origin": "fixture",
+  "asOf": 1789905600000,
+  "captureStartedAt": 1789902000000,
+  "epoch": 0,
+  "sequence": 42,
+  "coverage": "active",
+  "coverageReasons": [],
+  "capabilities": { "observe": true, "block": false, "terminate": false, "permissions": true },
+  "droppedEvents": 0,
+  "truncated": false,
+  "apps": [
+    {
+      "id": "app-a",
+      "name": "AppA Browser",
+      "bundleId": null,
+      "path": "C:\\Apps\\AppA\\appA.exe",
+      "identitySource": "executable-path",
+      "uploadBytes": 15204321,
+      "downloadBytes": 203115508,
+      "upRate": 45200.5,
+      "downRate": 128000,
+      "connectionCount": 3,
+      "epoch": 0,
+      "connections": [
+        {
+          "id": "app-a/tcp/203.0.113.10:443/up",
+          "startedAt": 1789902400000,
+          "direction": "up",
+          "initiator": "local",
+          "hostname": "app-a.example",
+          "ip": "203.0.113.10",
+          "port": 443,
+          "protocol": "TCP",
+          "bytes": 12004321,
+          "domainSource": "system",
+          "route": "app-a.example (203.0.113.10)",
+          "proxyFlowId": null,
+          "state": "ESTABLISHED"
+        },
+        {
+          "id": "app-a/tcp/203.0.113.10:443/down",
+          "startedAt": 1789902400000,
+          "direction": "down",
+          "initiator": "local",
+          "hostname": "app-a.example",
+          "ip": "203.0.113.10",
+          "port": 443,
+          "protocol": "TCP",
+          "bytes": 180115508,
+          "domainSource": "system",
+          "route": "app-a.example (203.0.113.10)",
+          "proxyFlowId": null,
+          "state": "ESTABLISHED"
+        },
+        {
+          "id": "app-a/udp/203.0.113.53:53/up",
+          "startedAt": 1789905400000,
+          "direction": "up",
+          "initiator": "local",
+          "hostname": "resolver-a.example",
+          "ip": "203.0.113.53",
+          "port": 53,
+          "protocol": "UDP",
+          "bytes": 61440,
+          "domainSource": "system",
+          "route": "resolver-a.example (203.0.113.53)",
+          "proxyFlowId": null,
+          "state": "active"
+        }
+      ],
+      "history": [
+        { "t": 1789905596000, "up": 44100, "down": 126500 },
+        { "t": 1789905597000, "up": 44800, "down": 127100 },
+        { "t": 1789905598000, "up": 45050, "down": 127800 },
+        { "t": 1789905599000, "up": 45120, "down": 127900 },
+        { "t": 1789905600000, "up": 45200.5, "down": 128000 }
+      ],
+      "processes": [
+        {
+          "pid": 4124,
+          "startTime": 1789902100000,
+          "name": "appA.exe",
+          "parentPid": 800,
+          "executablePath": "C:\\Apps\\AppA\\appA.exe"
+        }
+      ]
+    },
+    {
+      "id": "app-b",
+      "name": "AppB Sync",
+      "bundleId": null,
+      "path": "C:\\Apps\\AppB\\appB.exe",
+      "identitySource": "executable-path",
+      "uploadBytes": 8388608,
+      "downloadBytes": 5242880,
+      "upRate": 0,
+      "downRate": 1024,
+      "connectionCount": 1,
+      "epoch": 0,
+      "connections": [
+        {
+          "id": "app-b/tcp/203.0.113.20:8443/down",
+          "startedAt": 1789903000000,
+          "direction": "down",
+          "initiator": "remote",
+          "hostname": "sync-b.example",
+          "ip": "203.0.113.20",
+          "port": 8443,
+          "protocol": "TCP",
+          "bytes": 5242880,
+          "domainSource": "system",
+          "route": "sync-b.example (203.0.113.20)",
+          "proxyFlowId": null,
+          "state": "ESTABLISHED"
+        }
+      ],
+      "history": [
+        { "t": 1789905596000, "up": 0, "down": 980 },
+        { "t": 1789905597000, "up": 0, "down": 1000 },
+        { "t": 1789905598000, "up": 0, "down": 1010 },
+        { "t": 1789905599000, "up": 0, "down": 1020 },
+        { "t": 1789905600000, "up": 0, "down": 1024 }
+      ],
+      "processes": [
+        {
+          "pid": 6212,
+          "startTime": 1789902200000,
+          "name": "appB.exe",
+          "parentPid": 800,
+          "executablePath": "C:\\Apps\\AppB\\appB.exe"
+        }
+      ]
+    },
+    {
+      "id": "svc-c",
+      "name": "Service C Host",
+      "bundleId": null,
+      "path": "C:\\Windows\\System32\\svchost-svc.exe",
+      "identitySource": "executable-path",
+      "uploadBytes": 1048576,
+      "downloadBytes": 2097152,
+      "upRate": 128,
+      "downRate": 256,
+      "connectionCount": 1,
+      "epoch": 0,
+      "connections": [
+        {
+          "id": "svc-c/tcp/203.0.113.30:443/up",
+          "startedAt": 1789904000000,
+          "direction": "up",
+          "initiator": "local",
+          "hostname": "telemetry-c.example",
+          "ip": "203.0.113.30",
+          "port": 443,
+          "protocol": "TCP",
+          "bytes": 1048576,
+          "domainSource": "system",
+          "route": "telemetry-c.example (203.0.113.30)",
+          "proxyFlowId": null,
+          "state": "ESTABLISHED"
+        }
+      ],
+      "history": [
+        { "t": 1789905598000, "up": 120, "down": 250 },
+        { "t": 1789905599000, "up": 124, "down": 253 },
+        { "t": 1789905600000, "up": 128, "down": 256 }
+      ],
+      "processes": [
+        {
+          "pid": 1108,
+          "startTime": 1789902050000,
+          "name": "svchost-svc.exe",
+          "parentPid": 664,
+          "executablePath": "C:\\Windows\\System32\\svchost-svc.exe"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "{1A2B3C4D-0000-4000-8000-ETH0OBDIM001}",
+      "name": "Ethernet0",
+      "kind": "physical",
+      "upRate": 51200,
+      "downRate": 150000,
+      "rxBytes": 312115508,
+      "txBytes": 20204321,
+      "epoch": 0,
+      "history": [
+        { "t": 1789905596000, "up": 50500, "down": 148000 },
+        { "t": 1789905597000, "up": 50800, "down": 148800 },
+        { "t": 1789905598000, "up": 51000, "down": 149200 },
+        { "t": 1789905599000, "up": 51100, "down": 149600 },
+        { "t": 1789905600000, "up": 51200, "down": 150000 }
+      ]
+    },
+    {
+      "id": "{1A2B3C4D-0000-4000-8000-TUN0OBDIM001}",
+      "name": "Wintun0",
+      "kind": "tunnel",
+      "upRate": 45200.5,
+      "downRate": 128000,
+      "rxBytes": 180115508,
+      "txBytes": 12004321,
+      "epoch": 0,
+      "history": [
+        { "t": 1789905598000, "up": 45050, "down": 127800 },
+        { "t": 1789905599000, "up": 45120, "down": 127900 },
+        { "t": 1789905600000, "up": 45200.5, "down": 128000 }
+      ]
+    }
+  ]
+}

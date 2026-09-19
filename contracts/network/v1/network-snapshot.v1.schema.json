@@ -1,0 +1,377 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://obdim.local/contracts/network/v1/network-snapshot.v1.schema.json",
+  "title": "OBDim NetworkSnapshot v1",
+  "description": "OB Dim network snapshot contract v1 (frozen 2026-09-20, phase N0). Companion document: contracts/network/v1/README.md. Semantic rules S1-S8 that JSON Schema cannot express (id uniqueness, strictly increasing history timestamps, cross-field domain provenance, whole-message byte cap) are defined in README section 11 and enforced by tools/NetworkProbe validate.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "origin",
+    "asOf",
+    "captureStartedAt",
+    "epoch",
+    "sequence",
+    "coverage",
+    "coverageReasons",
+    "capabilities",
+    "droppedEvents",
+    "truncated",
+    "apps",
+    "interfaces"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1,
+      "description": "Contract version. Must match the /v1/ path."
+    },
+    "origin": {
+      "enum": ["host", "fixture"],
+      "description": "Production builds only accept 'host'. 'fixture' never appears in production."
+    },
+    "asOf": { "$ref": "#/$defs/unixMs" },
+    "captureStartedAt": {
+      "$ref": "#/$defs/unixMs",
+      "description": "Start of the current capture session (current snapshot epoch). Semantic rule S4: captureStartedAt <= asOf."
+    },
+    "epoch": {
+      "$ref": "#/$defs/nonNegativeSafeInt",
+      "description": "Capture-session epoch. Increments on capture restart; sequence resets to 0. Never compared across epochs."
+    },
+    "sequence": {
+      "$ref": "#/$defs/nonNegativeSafeInt",
+      "description": "Monotonic per snapshot epoch, starting at 0, +1 per snapshot."
+    },
+    "coverage": {
+      "enum": ["active", "partial", "stopped", "starting", "denied", "disconnected"],
+      "description": "Coverage state. Non-data states (stopped/starting/denied/disconnected) require empty apps/interfaces (semantic rule S5)."
+    },
+    "coverageReasons": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 10,
+      "items": {
+        "enum": [
+          "capture-initializing",
+          "user-disabled",
+          "permission-denied",
+          "host-unreachable",
+          "helper-crashed",
+          "etw-unavailable",
+          "pid-table-partial",
+          "interface-counters-unavailable",
+          "proxy-correlation-unavailable",
+          "domain-resolution-unavailable"
+        ]
+      },
+      "description": "Machine-readable coverage reason codes. Empty iff coverage=active (enforced by the if/then below and semantic rule S6)."
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observe", "block", "terminate", "permissions"],
+      "properties": {
+        "observe": { "type": "boolean" },
+        "block": { "type": "boolean", "description": "Always false during the read-only phase (N2)." },
+        "terminate": { "type": "boolean", "description": "Always false during the read-only phase (N2)." },
+        "permissions": { "type": "boolean" }
+      },
+      "description": "Real capability flags from the capture service. JSON booleans only; numbers/strings rejected."
+    },
+    "droppedEvents": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "Raw events dropped in the current epoch due to aggregation/buffer pressure. Null = unknown; never encode unknown as 0."
+    },
+    "truncated": {
+      "type": "boolean",
+      "description": "True when any list/history was cut by the bounds in README section 9."
+    },
+    "apps": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": { "$ref": "#/$defs/appObservation" },
+      "description": "App-scope observations. App ids must be unique (semantic rule S1). Never summed with interfaces."
+    },
+    "interfaces": {
+      "type": "array",
+      "maxItems": 128,
+      "items": { "$ref": "#/$defs/interfaceObservation" },
+      "description": "Interface-scope observations. Interface ids must be unique (semantic rule S1). Never summed with apps."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "coverage": { "const": "active" } },
+        "required": ["coverage"]
+      },
+      "then": {
+        "properties": { "coverageReasons": { "maxItems": 0 } }
+      },
+      "else": {
+        "properties": { "coverageReasons": { "minItems": 1 } }
+      }
+    }
+  ],
+  "$defs": {
+    "unixMs": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "UTC Unix milliseconds. JS-safe integer."
+    },
+    "nonNegativeSafeInt": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "nullableCounter": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "Cumulative byte count in decimal bytes. Null = unknown; unknown is never encoded as 0."
+    },
+    "nullableRate": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "Rate in decimal bytes/second (B/s). Null = unknown."
+    },
+    "trafficPoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "up", "down"],
+      "properties": {
+        "t": { "$ref": "#/$defs/unixMs" },
+        "up": { "$ref": "#/$defs/nullableRate" },
+        "down": { "$ref": "#/$defs/nullableRate" }
+      },
+      "description": "One sample. up and down are independently nullable (N0 ruling, README section 7): a point may know one direction and not the other. History timestamps strictly increasing and <= asOf (semantic rule S3)."
+    },
+    "processIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pid", "startTime", "name", "parentPid", "executablePath"],
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "OS process id. PIDs are reused; pid+startTime together identify a process instance."
+        },
+        "startTime": { "$ref": "#/$defs/unixMs" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "parentPid": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "executablePath": { "type": ["string", "null"], "maxLength": 1024 }
+      }
+    },
+    "connectionObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "startedAt",
+        "direction",
+        "initiator",
+        "hostname",
+        "ip",
+        "port",
+        "protocol",
+        "bytes",
+        "domainSource",
+        "route",
+        "proxyFlowId",
+        "state"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:/-]+$",
+          "description": "Stable directional observation id, unique within the owning app (semantic rule S1). Not a display index."
+        },
+        "startedAt": { "$ref": "#/$defs/unixMs" },
+        "direction": {
+          "enum": ["up", "down"],
+          "description": "Direction of the counted bytes: up = local to remote, down = remote to local. NOT the TCP initiator identity."
+        },
+        "initiator": {
+          "enum": ["local", "remote", "unknown"],
+          "description": "Which side initiated the connection, separated from byte direction. unknown when there is no evidence."
+        },
+        "hostname": {
+          "type": ["string", "null"],
+          "maxLength": 253,
+          "description": "Resolved hostname. Non-null requires domainSource system|proxy (semantic rule S2)."
+        },
+        "ip": {
+          "type": ["string", "null"],
+          "maxLength": 45,
+          "description": "Remote endpoint literal (IPv4 or IPv6)."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "protocol": { "enum": ["TCP", "UDP"] },
+        "bytes": {
+          "$ref": "#/$defs/nullableCounter",
+          "description": "Observed bytes for this direction, not a packet count. Null = unknown."
+        },
+        "domainSource": {
+          "enum": ["system", "proxy", "unknown"],
+          "description": "Provenance of the hostname. No evidence means unknown. proxyFlowId non-null requires proxy (semantic rule S2)."
+        },
+        "route": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "Display text; unknown must remain unknown."
+        },
+        "proxyFlowId": {
+          "type": ["string", "null"],
+          "maxLength": 128,
+          "description": "Proxy (e.g. Mihomo) correlation id. Optional; only set with real correlation evidence, never guessed."
+        },
+        "state": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Free-form connection state (e.g. ESTABLISHED, TIME_WAIT, active)."
+        }
+      }
+    },
+    "appObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "bundleId",
+        "path",
+        "identitySource",
+        "uploadBytes",
+        "downloadBytes",
+        "upRate",
+        "downRate",
+        "connectionCount",
+        "epoch",
+        "connections",
+        "history",
+        "processes"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9._:-]{0,127}$",
+          "description": "Stable native app identity. Never a bare PID. Survives process restarts (app epoch increments instead)."
+        },
+        "name": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "bundleId": {
+          "type": ["string", "null"],
+          "maxLength": 512,
+          "description": "Bundle identifier (macOS). Usually null on Windows."
+        },
+        "path": { "type": ["string", "null"], "maxLength": 1024 },
+        "identitySource": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]{1,64}$",
+          "description": "How the app id was derived, e.g. executable-path, package-family, fallback-name."
+        },
+        "uploadBytes": {
+          "$ref": "#/$defs/nullableCounter",
+          "description": "App-flow cumulative upload since captureStartedAt, valid only within the current app epoch."
+        },
+        "downloadBytes": {
+          "$ref": "#/$defs/nullableCounter",
+          "description": "App-flow cumulative download since captureStartedAt, valid only within the current app epoch."
+        },
+        "upRate": { "$ref": "#/$defs/nullableRate" },
+        "downRate": { "$ref": "#/$defs/nullableRate" },
+        "connectionCount": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Observable connection count. Null = unknown (connection table unreadable); never report unknown as 0."
+        },
+        "epoch": {
+          "$ref": "#/$defs/nonNegativeSafeInt",
+          "description": "App cumulative-series epoch. Increments when a process restart resets the app's cumulative counters."
+        },
+        "connections": {
+          "type": "array",
+          "maxItems": 2000,
+          "items": { "$ref": "#/$defs/connectionObservation" }
+        },
+        "history": {
+          "type": "array",
+          "maxItems": 7200,
+          "items": { "$ref": "#/$defs/trafficPoint" },
+          "description": "Strictly increasing timestamps (semantic rule S3); real gaps stay gaps, never zero-filled."
+        },
+        "processes": {
+          "type": "array",
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/processIdentity" },
+          "description": "(pid,startTime) pairs unique within this app (semantic rule S1)."
+        }
+      }
+    },
+    "interfaceObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "kind",
+        "upRate",
+        "downRate",
+        "rxBytes",
+        "txBytes",
+        "epoch",
+        "history"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:{}-]+$",
+          "description": "Stable interface instance identity (e.g. Windows InterfaceGuid)."
+        },
+        "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "kind": {
+          "enum": ["physical", "tunnel", "loopback", "unknown"],
+          "description": "unknown when classification evidence is insufficient."
+        },
+        "upRate": { "$ref": "#/$defs/nullableRate" },
+        "downRate": { "$ref": "#/$defs/nullableRate" },
+        "rxBytes": {
+          "$ref": "#/$defs/nullableCounter",
+          "description": "Cumulative received bytes within the current interface epoch. Comparable only within the same epoch."
+        },
+        "txBytes": {
+          "$ref": "#/$defs/nullableCounter",
+          "description": "Cumulative transmitted bytes within the current interface epoch. Comparable only within the same epoch."
+        },
+        "epoch": {
+          "$ref": "#/$defs/nonNegativeSafeInt",
+          "description": "Interface counter-series epoch. Increments on counter wrap or re-enumeration."
+        },
+        "history": {
+          "type": "array",
+          "maxItems": 7200,
+          "items": { "$ref": "#/$defs/trafficPoint" }
+        }
+      }
+    }
+  }
+}

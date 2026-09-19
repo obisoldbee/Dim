@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "origin": "fixture",
+  "asOf": 1789905600000,
+  "captureStartedAt": 1789902000000,
+  "epoch": 0,
+  "sequence": 12,
+  "coverage": "active",
+  "coverageReasons": [],
+  "capabilities": { "observe": true, "block": false, "terminate": false, "permissions": true },
+  "droppedEvents": 0,
+  "truncated": false,
+  "apps": [
+    {
+      "id": "app-a",
+      "name": "AppA Browser",
+      "bundleId": null,
+      "path": "C:\\Apps\\AppA\\appA.exe",
+      "identitySource": "executable-path",
+      "uploadBytes": 15204321,
+      "downloadBytes": 203115508,
+      "upRate": 45200.5,
+      "downRate": 128000,
+      "connectionCount": 0,
+      "connections": [],
+      "history": [
+        { "t": 1789905600000, "up": 45200.5, "down": 128000 }
+      ],
+      "processes": [
+        {
+          "pid": 4124,
+          "startTime": 1789902100000,
+          "name": "appA.exe",
+          "parentPid": 800,
+          "executablePath": "C:\\Apps\\AppA\\appA.exe"
+        }
+      ]
+    }
+  ],
+  "interfaces": []
+}

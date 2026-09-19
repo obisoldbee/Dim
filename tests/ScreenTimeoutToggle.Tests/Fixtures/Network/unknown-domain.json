@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "origin": "fixture",
+  "asOf": 1789905600000,
+  "captureStartedAt": 1789902000000,
+  "epoch": 0,
+  "sequence": 31,
+  "coverage": "active",
+  "coverageReasons": [],
+  "capabilities": { "observe": true, "block": false, "terminate": false, "permissions": true },
+  "droppedEvents": 0,
+  "truncated": false,
+  "apps": [
+    {
+      "id": "app-u",
+      "name": "AppU Agent",
+      "bundleId": null,
+      "path": "C:\\Apps\\AppU\\appU.exe",
+      "identitySource": "executable-path",
+      "uploadBytes": 786432,
+      "downloadBytes": 131072,
+      "upRate": 512,
+      "downRate": 96,
+      "connectionCount": 1,
+      "epoch": 0,
+      "connections": [
+        {
+          "id": "app-u/tcp/203.0.113.44:8080/up",
+          "startedAt": 1789904800000,
+          "direction": "up",
+          "initiator": "unknown",
+          "hostname": null,
+          "ip": "203.0.113.44",
+          "port": 8080,
+          "protocol": "TCP",
+          "bytes": 786432,
+          "domainSource": "unknown",
+          "route": "unknown",
+          "proxyFlowId": null,
+          "state": "ESTABLISHED"
+        }
+      ],
+      "history": [
+        { "t": 1789905599000, "up": 500, "down": 90 },
+        { "t": 1789905600000, "up": 512, "down": 96 }
+      ],
+      "processes": [
+        {
+          "pid": 8864,
+          "startTime": 1789902400000,
+          "name": "appU.exe",
+          "parentPid": 800,
+          "executablePath": "C:\\Apps\\AppU\\appU.exe"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "{1A2B3C4D-0000-4000-8000-ETH0OBDIM001}",
+      "name": "Ethernet0",
+      "kind": "physical",
+      "upRate": 600,
+      "downRate": 120,
+      "rxBytes": 150000,
+      "txBytes": 800000,
+      "epoch": 0,
+      "history": [
+        { "t": 1789905599000, "up": 590, "down": 115 },
+        { "t": 1789905600000, "up": 600, "down": 120 }
+      ]
+    }
+  ]
+}

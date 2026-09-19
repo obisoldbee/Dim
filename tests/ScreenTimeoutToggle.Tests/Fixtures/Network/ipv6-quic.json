@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "origin": "fixture",
+  "asOf": 1789905600000,
+  "captureStartedAt": 1789902000000,
+  "epoch": 0,
+  "sequence": 55,
+  "coverage": "active",
+  "coverageReasons": [],
+  "capabilities": { "observe": true, "block": false, "terminate": false, "permissions": true },
+  "droppedEvents": 0,
+  "truncated": false,
+  "apps": [
+    {
+      "id": "app-q",
+      "name": "AppQ Stream",
+      "bundleId": null,
+      "path": "C:\\Apps\\AppQ\\appQ.exe",
+      "identitySource": "executable-path",
+      "uploadBytes": 4000000,
+      "downloadBytes": 96000000,
+      "upRate": 16000,
+      "downRate": 384000,
+      "connectionCount": 2,
+      "epoch": 0,
+      "connections": [
+        {
+          "id": "app-q/udp/2001:db8:85a3::8a2e:370:7334:443/up",
+          "startedAt": 1789903400000,
+          "direction": "up",
+          "initiator": "local",
+          "hostname": "app-e.example",
+          "ip": "2001:db8:85a3::8a2e:370:7334",
+          "port": 443,
+          "protocol": "UDP",
+          "bytes": 4000000,
+          "domainSource": "system",
+          "route": "app-e.example (2001:db8:85a3::8a2e:370:7334)",
+          "proxyFlowId": null,
+          "state": "active"
+        },
+        {
+          "id": "app-q/udp/2001:db8:85a3::8a2e:370:7334:443/down",
+          "startedAt": 1789903400000,
+          "direction": "down",
+          "initiator": "local",
+          "hostname": "app-e.example",
+          "ip": "2001:db8:85a3::8a2e:370:7334",
+          "port": 443,
+          "protocol": "UDP",
+          "bytes": 96000000,
+          "domainSource": "system",
+          "route": "app-e.example (2001:db8:85a3::8a2e:370:7334)",
+          "proxyFlowId": null,
+          "state": "active"
+        }
+      ],
+      "history": [
+        { "t": 1789905599000, "up": 15900, "down": 383000 },
+        { "t": 1789905600000, "up": 16000, "down": 384000 }
+      ],
+      "processes": [
+        {
+          "pid": 7340,
+          "startTime": 1789902300000,
+          "name": "appQ.exe",
+          "parentPid": 800,
+          "executablePath": "C:\\Apps\\AppQ\\appQ.exe"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "{1A2B3C4D-0000-4000-8000-ETH0OBDIM001}",
+      "name": "Ethernet0",
+      "kind": "physical",
+      "upRate": 16500,
+      "downRate": 390000,
+      "rxBytes": 97000000,
+      "txBytes": 4100000,
+      "epoch": 0,
+      "history": [
+        { "t": 1789905599000, "up": 16400, "down": 389000 },
+        { "t": 1789905600000, "up": 16500, "down": 390000 }
+      ]
+    }
+  ]
+}

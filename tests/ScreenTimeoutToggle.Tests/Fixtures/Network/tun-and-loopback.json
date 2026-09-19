@@ -1,0 +1,175 @@
+{
+  "schemaVersion": 1,
+  "origin": "fixture",
+  "asOf": 1789905600000,
+  "captureStartedAt": 1789902000000,
+  "epoch": 0,
+  "sequence": 63,
+  "coverage": "active",
+  "coverageReasons": [],
+  "capabilities": { "observe": true, "block": false, "terminate": false, "permissions": true },
+  "droppedEvents": 0,
+  "truncated": false,
+  "apps": [
+    {
+      "id": "app-a",
+      "name": "AppA Browser",
+      "bundleId": null,
+      "path": "C:\\Apps\\AppA\\appA.exe",
+      "identitySource": "executable-path",
+      "uploadBytes": 12004321,
+      "downloadBytes": 180115508,
+      "upRate": 45200.5,
+      "downRate": 128000,
+      "connectionCount": 2,
+      "epoch": 0,
+      "connections": [
+        {
+          "id": "app-a/tcp/127.0.0.1:7890/up",
+          "startedAt": 1789902400000,
+          "direction": "up",
+          "initiator": "local",
+          "hostname": "app-cdn.example",
+          "ip": "127.0.0.1",
+          "port": 7890,
+          "protocol": "TCP",
+          "bytes": 12004321,
+          "domainSource": "proxy",
+          "route": "app-cdn.example via proxyd (Wintun0)",
+          "proxyFlowId": "mihomo-flow-0042",
+          "state": "ESTABLISHED"
+        },
+        {
+          "id": "app-a/tcp/127.0.0.1:7890/down",
+          "startedAt": 1789902400000,
+          "direction": "down",
+          "initiator": "local",
+          "hostname": "app-cdn.example",
+          "ip": "127.0.0.1",
+          "port": 7890,
+          "protocol": "TCP",
+          "bytes": 180115508,
+          "domainSource": "proxy",
+          "route": "app-cdn.example via proxyd (Wintun0)",
+          "proxyFlowId": "mihomo-flow-0042",
+          "state": "ESTABLISHED"
+        }
+      ],
+      "history": [
+        { "t": 1789905599000, "up": 45120, "down": 127900 },
+        { "t": 1789905600000, "up": 45200.5, "down": 128000 }
+      ],
+      "processes": [
+        {
+          "pid": 4124,
+          "startTime": 1789902100000,
+          "name": "appA.exe",
+          "parentPid": 800,
+          "executablePath": "C:\\Apps\\AppA\\appA.exe"
+        }
+      ]
+    },
+    {
+      "id": "app-proxyd",
+      "name": "proxyd Proxy",
+      "bundleId": null,
+      "path": "C:\\Apps\\proxyd\\proxyd.exe",
+      "identitySource": "executable-path",
+      "uploadBytes": 180115508,
+      "downloadBytes": 12004321,
+      "upRate": 128000,
+      "downRate": 45200.5,
+      "connectionCount": 2,
+      "epoch": 0,
+      "connections": [
+        {
+          "id": "app-proxyd/tcp/203.0.113.10:443/up",
+          "startedAt": 1789902400100,
+          "direction": "up",
+          "initiator": "local",
+          "hostname": "app-cdn.example",
+          "ip": "203.0.113.10",
+          "port": 443,
+          "protocol": "TCP",
+          "bytes": 12004321,
+          "domainSource": "proxy",
+          "route": "app-cdn.example (203.0.113.10) via Wintun0",
+          "proxyFlowId": "mihomo-flow-0042",
+          "state": "ESTABLISHED"
+        },
+        {
+          "id": "app-proxyd/tcp/127.0.0.1:7890/down",
+          "startedAt": 1789902400000,
+          "direction": "down",
+          "initiator": "remote",
+          "hostname": null,
+          "ip": "127.0.0.1",
+          "port": 7890,
+          "protocol": "TCP",
+          "bytes": 12004321,
+          "domainSource": "unknown",
+          "route": "loopback",
+          "proxyFlowId": null,
+          "state": "ESTABLISHED"
+        }
+      ],
+      "history": [
+        { "t": 1789905599000, "up": 127900, "down": 45120 },
+        { "t": 1789905600000, "up": 128000, "down": 45200.5 }
+      ],
+      "processes": [
+        {
+          "pid": 3548,
+          "startTime": 1789902060000,
+          "name": "proxyd.exe",
+          "parentPid": 664,
+          "executablePath": "C:\\Apps\\proxyd\\proxyd.exe"
+        }
+      ]
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "{1A2B3C4D-0000-4000-8000-ETH0OBDIM001}",
+      "name": "Ethernet0",
+      "kind": "physical",
+      "upRate": 46000,
+      "downRate": 129500,
+      "rxBytes": 182000000,
+      "txBytes": 12200000,
+      "epoch": 0,
+      "history": [
+        { "t": 1789905599000, "up": 45900, "down": 129400 },
+        { "t": 1789905600000, "up": 46000, "down": 129500 }
+      ]
+    },
+    {
+      "id": "{1A2B3C4D-0000-4000-8000-TUN0OBDIM001}",
+      "name": "Wintun0",
+      "kind": "tunnel",
+      "upRate": 45200.5,
+      "downRate": 128000,
+      "rxBytes": 180115508,
+      "txBytes": 12004321,
+      "epoch": 0,
+      "history": [
+        { "t": 1789905599000, "up": 45120, "down": 127900 },
+        { "t": 1789905600000, "up": 45200.5, "down": 128000 }
+      ]
+    },
+    {
+      "id": "{1A2B3C4D-0000-4000-8000-LOOPOBDIM001}",
+      "name": "Loopback Pseudo-Interface",
+      "kind": "loopback",
+      "upRate": 173200.5,
+      "downRate": 173200.5,
+      "rxBytes": 192159829,
+      "txBytes": 192159829,
+      "epoch": 0,
+      "history": [
+        { "t": 1789905599000, "up": 173020, "down": 173020 },
+        { "t": 1789905600000, "up": 173200.5, "down": 173200.5 }
+      ]
+    }
+  ]
+}
