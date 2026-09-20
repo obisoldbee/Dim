@@ -7,4 +7,14 @@
     <IsPackable>false</IsPackable>
     <!-- N0 platform capability probe. No third-party packages on purpose. -->
   </PropertyGroup>
+
+  <!--
+    N2: the `snapshot` command drives the REAL collector. The network module is pure
+    BCL + P/Invoke (no WinForms, no OBDim services), so its sources link straight into
+    this console host — one implementation, two hosts, no duplicated logic.
+  -->
+  <ItemGroup>
+    <Compile Include="..\..\src\ScreenTimeoutToggle\Monitoring\Infrastructure\IClock.cs" Link="Network\IClock.cs" />
+    <Compile Include="..\..\src\ScreenTimeoutToggle\Monitoring\Network\**\*.cs" LinkBase="Network" />
+  </ItemGroup>
 </Project>

@@ -191,7 +191,7 @@ public class Round2CoordinatorTests
         using var env = new Round2Environment();
         File.WriteAllText(env.Settings.FilePath, """{"schemaVersion":1,"leftClickOpensPopover":false,"remindersEnabled":true,"providers":[{"id":"Codex","enabled":true,"cliPath":"private-path"}]}""");
         var migrated = env.Settings.Load();
-        Assert.Equal(2, migrated.SchemaVersion); Assert.Equal(5, migrated.RefreshIntervalMinutes);
+        Assert.Equal(3, migrated.SchemaVersion); Assert.Equal(5, migrated.RefreshIntervalMinutes);
         Assert.False(migrated.LeftClickOpensPopover); Assert.True(migrated.RemindersEnabled);
         Assert.Equal("private-path", migrated.Provider(ProviderId.Codex).CliPath);
         Assert.Null(migrated.Provider(ProviderId.Codex).RefreshIntervalMinutes);

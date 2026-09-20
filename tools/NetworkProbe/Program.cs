@@ -12,6 +12,7 @@ return args.Length == 0
         "connections" => ConnectionTableProbe.Run(),
         "process" => ProcessProbe.Run(),
         "perf" => PerfProbe.Run(),
+        "snapshot" => SnapshotProbe.Run(),
         "validate" when args.Length >= 2 => SnapshotValidator.Run(args[1]),
         _ => Usage(),
     };
@@ -19,6 +20,6 @@ return args.Length == 0
 static int Usage()
 {
     Console.Error.WriteLine(
-        "usage: NetworkProbe <interfaces|connections|process|perf|all> | validate <snapshot.json>");
+        "usage: NetworkProbe <interfaces|connections|process|perf|all|snapshot> | validate <snapshot.json>");
     return 2;
 }

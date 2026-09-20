@@ -270,10 +270,16 @@ public sealed record ProviderSettings
 /// </summary>
 public sealed record MonitoringSettings
 {
-    public int SchemaVersion { get; init; } = 2;
+    public int SchemaVersion { get; init; } = 3;
 
     /// <summary>Memory monitoring defaults to on.</summary>
     public bool MemoryEnabled { get; init; } = true;
+
+    /// <summary>
+    /// Network observation (schema v3) defaults to OFF — the user opts in explicitly,
+    /// and upgraded configs that never mention it stay off (PRD §5.3: 网络默认关闭).
+    /// </summary>
+    public bool NetworkEnabled { get; init; } = false;
 
     /// <summary>Quota reminders default to off.</summary>
     public bool RemindersEnabled { get; init; } = false;

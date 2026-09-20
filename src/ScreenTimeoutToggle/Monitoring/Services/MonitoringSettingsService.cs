@@ -14,7 +14,9 @@ namespace OBDim.Monitoring.Services;
 /// </summary>
 public sealed class MonitoringSettingsService
 {
-    private const int CurrentSchemaVersion = 2;
+    // v3 adds networkEnabled (default off). Older files migrate on Load; a missing
+    // field deserializes to its default (false), exactly the opt-in we want.
+    private const int CurrentSchemaVersion = 3;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
