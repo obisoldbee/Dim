@@ -83,7 +83,7 @@ public class NetworkObservationServiceTests
         s.SetEnabled(true);
         var pending = Task.Run(s.Poll); Assert.True(entered.Wait(TimeSpan.FromSeconds(3)));
         s.SetEnabled(false); s.SetEnabled(true); release.Set(); await pending;
-        Assert.Equal("starting", s.Current.State); Assert.Empty(s.Current.Interfaces);
+        Assert.Equal("waiting", s.Current.State); Assert.Empty(s.Current.Interfaces);
         reader.BeforeRead = null; s.Poll();
         Assert.Equal("active", s.Current.State);
     }

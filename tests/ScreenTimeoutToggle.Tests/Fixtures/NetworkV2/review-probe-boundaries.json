@@ -1,0 +1,548 @@
+{
+  "source": "v1.1.5 review deterministic inputs; original fixtures unchanged",
+  "cases": [
+    {
+      "name": "explicit-null",
+      "samples": [
+        {
+          "sampleID": "a",
+          "sourceID": "review.interface",
+          "interfaceID": "review-nic",
+          "captureSessionID": "review-session",
+          "counterEpoch": "1",
+          "sampledAt": "2026-09-22T08:00:00.000Z",
+          "publishedAt": "2026-09-22T08:00:00.100Z",
+          "monotonicNs": "1000000000",
+          "rateWindowMs": 1000,
+          "cadence": {
+            "sourceIntervalMs": 1000,
+            "historyIntervalMs": 1000,
+            "regimeID": "review-1s",
+            "reason": "source-sampling"
+          },
+          "continuity": {
+            "upload": {
+              "state": "continuous",
+              "previousSampleID": null,
+              "reason": null
+            },
+            "download": {
+              "state": "continuous",
+              "previousSampleID": null,
+              "reason": null
+            }
+          },
+          "rates": {
+            "upload": 100,
+            "download": 1000
+          }
+        },
+        {
+          "sampleID": "b",
+          "sourceID": "review.interface",
+          "interfaceID": "review-nic",
+          "captureSessionID": "review-session",
+          "counterEpoch": "1",
+          "sampledAt": "2026-09-22T08:00:00.500Z",
+          "publishedAt": "2026-09-22T08:00:00.600Z",
+          "monotonicNs": "1500000000",
+          "rateWindowMs": 500,
+          "cadence": {
+            "sourceIntervalMs": 1000,
+            "historyIntervalMs": 1000,
+            "regimeID": "review-1s",
+            "reason": "source-sampling"
+          },
+          "continuity": {
+            "upload": {
+              "state": "break",
+              "previousSampleID": "a",
+              "reason": "counter-reset-or-wrap"
+            },
+            "download": {
+              "state": "continuous",
+              "previousSampleID": "a",
+              "reason": null
+            }
+          },
+          "rates": {
+            "upload": null,
+            "download": 1000
+          }
+        }
+      ],
+      "at": "2026-09-22T08:00:00.500Z",
+      "upload": null,
+      "download": 1000
+    },
+    {
+      "name": "before-isolated",
+      "samples": [
+        {
+          "sampleID": "single",
+          "sourceID": "review.interface",
+          "interfaceID": "review-nic",
+          "captureSessionID": "review-session",
+          "counterEpoch": "1",
+          "sampledAt": "2026-09-22T08:00:01.000Z",
+          "publishedAt": "2026-09-22T08:00:01.100Z",
+          "monotonicNs": "2000000000",
+          "rateWindowMs": 1000,
+          "cadence": {
+            "sourceIntervalMs": 1000,
+            "historyIntervalMs": 1000,
+            "regimeID": "review-1s",
+            "reason": "source-sampling"
+          },
+          "continuity": {
+            "upload": {
+              "state": "continuous",
+              "previousSampleID": null,
+              "reason": null
+            },
+            "download": {
+              "state": "continuous",
+              "previousSampleID": null,
+              "reason": null
+            }
+          },
+          "rates": {
+            "upload": 200,
+            "download": 1000
+          }
+        }
+      ],
+      "at": "2026-09-22T08:00:00.600Z",
+      "upload": null,
+      "download": null
+    },
+    {
+      "name": "after-null",
+      "samples": [
+        {
+          "sampleID": "a",
+          "sourceID": "review.interface",
+          "interfaceID": "review-nic",
+          "captureSessionID": "review-session",
+          "counterEpoch": "1",
+          "sampledAt": "2026-09-22T08:00:00.000Z",
+          "publishedAt": "2026-09-22T08:00:00.100Z",
+          "monotonicNs": "1000000000",
+          "rateWindowMs": 1000,
+          "cadence": {
+            "sourceIntervalMs": 1000,
+            "historyIntervalMs": 1000,
+            "regimeID": "review-1s",
+            "reason": "source-sampling"
+          },
+          "continuity": {
+            "upload": {
+              "state": "continuous",
+              "previousSampleID": null,
+              "reason": null
+            },
+            "download": {
+              "state": "continuous",
+              "previousSampleID": null,
+              "reason": null
+            }
+          },
+          "rates": {
+            "upload": 100,
+            "download": 1000
+          }
+        },
+        {
+          "sampleID": "b",
+          "sourceID": "review.interface",
+          "interfaceID": "review-nic",
+          "captureSessionID": "review-session",
+          "counterEpoch": "1",
+          "sampledAt": "2026-09-22T08:00:00.500Z",
+          "publishedAt": "2026-09-22T08:00:00.600Z",
+          "monotonicNs": "1500000000",
+          "rateWindowMs": 500,
+          "cadence": {
+            "sourceIntervalMs": 1000,
+            "historyIntervalMs": 1000,
+            "regimeID": "review-1s",
+            "reason": "source-sampling"
+          },
+          "continuity": {
+            "upload": {
+              "state": "break",
+              "previousSampleID": "a",
+              "reason": "counter-reset-or-wrap"
+            },
+            "download": {
+              "state": "continuous",
+              "previousSampleID": "a",
+              "reason": null
+            }
+          },
+          "rates": {
+            "upload": null,
+            "download": 1000
+          }
+        },
+        {
+          "sampleID": "c",
+          "sourceID": "review.interface",
+          "interfaceID": "review-nic",
+          "captureSessionID": "review-session",
+          "counterEpoch": "1",
+          "sampledAt": "2026-09-22T08:00:01.000Z",
+          "publishedAt": "2026-09-22T08:00:01.100Z",
+          "monotonicNs": "2000000000",
+          "rateWindowMs": 500,
+          "cadence": {
+            "sourceIntervalMs": 1000,
+            "historyIntervalMs": 1000,
+            "regimeID": "review-1s",
+            "reason": "source-sampling"
+          },
+          "continuity": {
+            "upload": {
+              "state": "continuous",
+              "previousSampleID": "b",
+              "reason": null
+            },
+            "download": {
+              "state": "continuous",
+              "previousSampleID": "b",
+              "reason": null
+            }
+          },
+          "rates": {
+            "upload": 200,
+            "download": 1000
+          }
+        }
+      ],
+      "at": "2026-09-22T08:00:00.750Z",
+      "upload": null,
+      "download": 1000
+    },
+    {
+      "name": "known-endpoint",
+      "samples": [
+        {
+          "sampleID": "a",
+          "sourceID": "review.interface",
+          "interfaceID": "review-nic",
+          "captureSessionID": "review-session",
+          "counterEpoch": "1",
+          "sampledAt": "2026-09-22T08:00:00.000Z",
+          "publishedAt": "2026-09-22T08:00:00.100Z",
+          "monotonicNs": "1000000000",
+          "rateWindowMs": 1000,
+          "cadence": {
+            "sourceIntervalMs": 1000,
+            "historyIntervalMs": 1000,
+            "regimeID": "review-1s",
+            "reason": "source-sampling"
+          },
+          "continuity": {
+            "upload": {
+              "state": "continuous",
+              "previousSampleID": null,
+              "reason": null
+            },
+            "download": {
+              "state": "continuous",
+              "previousSampleID": null,
+              "reason": null
+            }
+          },
+          "rates": {
+            "upload": 100,
+            "download": 1000
+          }
+        },
+        {
+          "sampleID": "b",
+          "sourceID": "review.interface",
+          "interfaceID": "review-nic",
+          "captureSessionID": "review-session",
+          "counterEpoch": "1",
+          "sampledAt": "2026-09-22T08:00:00.500Z",
+          "publishedAt": "2026-09-22T08:00:00.600Z",
+          "monotonicNs": "1500000000",
+          "rateWindowMs": 500,
+          "cadence": {
+            "sourceIntervalMs": 1000,
+            "historyIntervalMs": 1000,
+            "regimeID": "review-1s",
+            "reason": "source-sampling"
+          },
+          "continuity": {
+            "upload": {
+              "state": "break",
+              "previousSampleID": "a",
+              "reason": "counter-reset-or-wrap"
+            },
+            "download": {
+              "state": "continuous",
+              "previousSampleID": "a",
+              "reason": null
+            }
+          },
+          "rates": {
+            "upload": null,
+            "download": 1000
+          }
+        },
+        {
+          "sampleID": "c",
+          "sourceID": "review.interface",
+          "interfaceID": "review-nic",
+          "captureSessionID": "review-session",
+          "counterEpoch": "1",
+          "sampledAt": "2026-09-22T08:00:01.000Z",
+          "publishedAt": "2026-09-22T08:00:01.100Z",
+          "monotonicNs": "2000000000",
+          "rateWindowMs": 500,
+          "cadence": {
+            "sourceIntervalMs": 1000,
+            "historyIntervalMs": 1000,
+            "regimeID": "review-1s",
+            "reason": "source-sampling"
+          },
+          "continuity": {
+            "upload": {
+              "state": "continuous",
+              "previousSampleID": "b",
+              "reason": null
+            },
+            "download": {
+              "state": "continuous",
+              "previousSampleID": "b",
+              "reason": null
+            }
+          },
+          "rates": {
+            "upload": 200,
+            "download": 1000
+          }
+        }
+      ],
+      "at": "2026-09-22T08:00:01.000Z",
+      "upload": 200,
+      "download": 1000
+    },
+    {
+      "name": "after-isolated",
+      "samples": [
+        {
+          "sampleID": "a",
+          "sourceID": "review.interface",
+          "interfaceID": "review-nic",
+          "captureSessionID": "review-session",
+          "counterEpoch": "1",
+          "sampledAt": "2026-09-22T08:00:00.000Z",
+          "publishedAt": "2026-09-22T08:00:00.100Z",
+          "monotonicNs": "1000000000",
+          "rateWindowMs": 1000,
+          "cadence": {
+            "sourceIntervalMs": 1000,
+            "historyIntervalMs": 1000,
+            "regimeID": "review-1s",
+            "reason": "source-sampling"
+          },
+          "continuity": {
+            "upload": {
+              "state": "continuous",
+              "previousSampleID": null,
+              "reason": null
+            },
+            "download": {
+              "state": "continuous",
+              "previousSampleID": null,
+              "reason": null
+            }
+          },
+          "rates": {
+            "upload": 100,
+            "download": 1000
+          }
+        },
+        {
+          "sampleID": "b",
+          "sourceID": "review.interface",
+          "interfaceID": "review-nic",
+          "captureSessionID": "review-session",
+          "counterEpoch": "1",
+          "sampledAt": "2026-09-22T08:00:00.500Z",
+          "publishedAt": "2026-09-22T08:00:00.600Z",
+          "monotonicNs": "1500000000",
+          "rateWindowMs": 500,
+          "cadence": {
+            "sourceIntervalMs": 1000,
+            "historyIntervalMs": 1000,
+            "regimeID": "review-1s",
+            "reason": "source-sampling"
+          },
+          "continuity": {
+            "upload": {
+              "state": "break",
+              "previousSampleID": "a",
+              "reason": "counter-reset-or-wrap"
+            },
+            "download": {
+              "state": "continuous",
+              "previousSampleID": "a",
+              "reason": null
+            }
+          },
+          "rates": {
+            "upload": null,
+            "download": 1000
+          }
+        },
+        {
+          "sampleID": "c",
+          "sourceID": "review.interface",
+          "interfaceID": "review-nic",
+          "captureSessionID": "review-session",
+          "counterEpoch": "1",
+          "sampledAt": "2026-09-22T08:00:01.000Z",
+          "publishedAt": "2026-09-22T08:00:01.100Z",
+          "monotonicNs": "2000000000",
+          "rateWindowMs": 500,
+          "cadence": {
+            "sourceIntervalMs": 1000,
+            "historyIntervalMs": 1000,
+            "regimeID": "review-1s",
+            "reason": "source-sampling"
+          },
+          "continuity": {
+            "upload": {
+              "state": "continuous",
+              "previousSampleID": "b",
+              "reason": null
+            },
+            "download": {
+              "state": "continuous",
+              "previousSampleID": "b",
+              "reason": null
+            }
+          },
+          "rates": {
+            "upload": 200,
+            "download": 1000
+          }
+        }
+      ],
+      "at": "2026-09-22T08:00:01.100Z",
+      "upload": null,
+      "download": null
+    },
+    {
+      "name": "before-null",
+      "samples": [
+        {
+          "sampleID": "a",
+          "sourceID": "review.interface",
+          "interfaceID": "review-nic",
+          "captureSessionID": "review-session",
+          "counterEpoch": "1",
+          "sampledAt": "2026-09-22T08:00:00.000Z",
+          "publishedAt": "2026-09-22T08:00:00.100Z",
+          "monotonicNs": "1000000000",
+          "rateWindowMs": 1000,
+          "cadence": {
+            "sourceIntervalMs": 1000,
+            "historyIntervalMs": 1000,
+            "regimeID": "review-1s",
+            "reason": "source-sampling"
+          },
+          "continuity": {
+            "upload": {
+              "state": "continuous",
+              "previousSampleID": null,
+              "reason": null
+            },
+            "download": {
+              "state": "continuous",
+              "previousSampleID": null,
+              "reason": null
+            }
+          },
+          "rates": {
+            "upload": 100,
+            "download": 1000
+          }
+        },
+        {
+          "sampleID": "b",
+          "sourceID": "review.interface",
+          "interfaceID": "review-nic",
+          "captureSessionID": "review-session",
+          "counterEpoch": "1",
+          "sampledAt": "2026-09-22T08:00:00.500Z",
+          "publishedAt": "2026-09-22T08:00:00.600Z",
+          "monotonicNs": "1500000000",
+          "rateWindowMs": 500,
+          "cadence": {
+            "sourceIntervalMs": 1000,
+            "historyIntervalMs": 1000,
+            "regimeID": "review-1s",
+            "reason": "source-sampling"
+          },
+          "continuity": {
+            "upload": {
+              "state": "break",
+              "previousSampleID": "a",
+              "reason": "counter-reset-or-wrap"
+            },
+            "download": {
+              "state": "continuous",
+              "previousSampleID": "a",
+              "reason": null
+            }
+          },
+          "rates": {
+            "upload": null,
+            "download": 1000
+          }
+        },
+        {
+          "sampleID": "c",
+          "sourceID": "review.interface",
+          "interfaceID": "review-nic",
+          "captureSessionID": "review-session",
+          "counterEpoch": "1",
+          "sampledAt": "2026-09-22T08:00:01.000Z",
+          "publishedAt": "2026-09-22T08:00:01.100Z",
+          "monotonicNs": "2000000000",
+          "rateWindowMs": 500,
+          "cadence": {
+            "sourceIntervalMs": 1000,
+            "historyIntervalMs": 1000,
+            "regimeID": "review-1s",
+            "reason": "source-sampling"
+          },
+          "continuity": {
+            "upload": {
+              "state": "continuous",
+              "previousSampleID": "b",
+              "reason": null
+            },
+            "download": {
+              "state": "continuous",
+              "previousSampleID": "b",
+              "reason": null
+            }
+          },
+          "rates": {
+            "upload": 200,
+            "download": 1000
+          }
+        }
+      ],
+      "at": "2026-09-22T08:00:00.250Z",
+      "upload": null,
+      "download": 1000
+    }
+  ]
+}

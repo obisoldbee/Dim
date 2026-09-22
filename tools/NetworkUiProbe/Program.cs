@@ -16,6 +16,7 @@ internal static class Program
     [DllImport("user32.dll")] private static extern int GetGuiResources(IntPtr process, int flags);
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+    [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr hwnd, uint message, IntPtr wparam, IntPtr lparam);
     private static IEnumerable<Control> All(Control c) => c.Controls.Cast<Control>().SelectMany(x => new[] { x }.Concat(All(x)));
     [STAThread]
     private static void Main(string[] args)
@@ -26,8 +27,10 @@ internal static class Program
         LocalizationService.CurrentLanguage = args.Contains("--english") ? "en-US" : "zh-CN";
         var settings = new MonitoringSettingsService(Path.Combine(output, "probe-monitoring.json"));
         settings.Save(new MonitoringSettings { NetworkEnabled = true, Providers = MonitoringSettings.CreateDefaultProviders() });
+        var scenario = args.FirstOrDefault(a => a.StartsWith("--scenario="))?.Split('=')[1] ?? "live";
+        using var stress = scenario == "live" ? null : new StressSource(scenario);
         using var coordinator = new MonitoringCoordinator(SystemClock.Instance, new WindowsMemoryReader(),
-            new Dictionary<ProviderId, IProviderAdapter>(), settings, new MonitoringCacheService(Path.Combine(output, "cache")));
+            new Dictionary<ProviderId, IProviderAdapter>(), settings, new MonitoringCacheService(Path.Combine(output, "cache")), network: stress);
         using var form = new MonitorForm(coordinator);
         form.StartPosition = FormStartPosition.Manual; form.Location = new Point(80, 40);
         coordinator.Start();
@@ -44,11 +47,11 @@ internal static class Program
             try
             {
                 form.SetView(MonitorForm.View.Network);
-                await Task.Delay(6500);
+                await Task.Delay(scenario == "live" ? 6500 : 500);
                 form.Show(); form.Activate(); form.SetView(MonitorForm.View.Network);
                 var page = All(form).OfType<NetworkPage>().Single();
                 page.Chart.SetRange(0); page.Render(); Capture("network-native-1m");
-                page.Chart.SetRange(3); Capture("network-native-1h");
+                page.Chart.SetRange(scenario == "live" ? 3 : 4); Capture("network-native-history");
                 var process = Process.GetCurrentProcess();
                 object Resources()
                 {
@@ -65,17 +68,54 @@ internal static class Program
                 }
                 var before = Resources();
                 var samples = new List<double>();
+                var frames = new List<object>();
                 for (var i = 0; i < 100; i++)
                 {
                     form.SetView(MonitorForm.View.Memory);
                     await Task.Delay(1);
+                    var queued = Stopwatch.GetTimestamp();
+                    var dispatched = new TaskCompletionSource<double>();
+                    form.BeginInvoke(() => dispatched.SetResult(Stopwatch.GetElapsedTime(queued).TotalMilliseconds));
+                    var queueMs = await dispatched.Task;
+                    var gcBefore = new[] { GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2) };
+                    if (!form.Visible) throw new InvalidOperationException("Probe lost visibility; measurements rejected. Run without competing UI tests.");
+                    var paintsBefore = page.Chart.PaintCount;
                     var watch = Stopwatch.StartNew();
                     var tab = (Button)typeof(MonitorForm).GetField("_networkSegment", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(form)!;
                     tab.PerformClick(); page.Refresh(); page.Chart.Refresh();
-                    samples.Add(watch.Elapsed.TotalMilliseconds);
+                    if (!page.Visible || page.Chart.PaintCount <= paintsBefore)
+                        throw new InvalidOperationException("Target chart did not paint; transition rejected.");
+                    var elapsed = watch.Elapsed.TotalMilliseconds;
+                    samples.Add(elapsed);
+                    var snapshot = coordinator.Network.Current;
+                    var native = stress?.Service ?? coordinator.Network as NetworkObservationService;
+                    frames.Add(new { InputToPaintMs = elapsed, QueueMs = queueMs, PaintDelta = page.Chart.PaintCount - paintsBefore, Visible = form.Visible && page.Visible,
+                        page.Chart.LastProjectionMs, page.Chart.LastGeometryMs, page.Chart.LastPaintMs, page.Chart.GeometryBuildCount,
+                        snapshot.Version, Interfaces = snapshot.Interfaces.Count, Samples = snapshot.Interfaces.Sum(i => i.Samples.Count),
+                        SelectedSamples = snapshot.Interfaces.FirstOrDefault(i => i.Id == snapshot.SystemInterfaceID)?.Samples.Count ?? 0,
+                        GapMarkers = snapshot.Interfaces.FirstOrDefault(i => i.Id == snapshot.SystemInterfaceID)?.Samples.Count(s => s.Continuity.Upload.Reason is not (null or "start") || s.Continuity.Download.Reason is not (null or "start")) ?? 0,
+                        page.Chart.RangeIndex, Viewport = new { page.Chart.Width, page.Chart.Height, page.Chart.DeviceDpi },
+                        CurrentLockWaitMs = native?.LastCurrentLockWaitMs, SourceReadMs = native?.LastReadMs, SourcePublishMs = native?.LastPublishMs,
+                        GcDelta = new[] { GC.CollectionCount(0)-gcBefore[0], GC.CollectionCount(1)-gcBefore[1], GC.CollectionCount(2)-gcBefore[2] } });
                     await Task.Delay(1);
                 }
                 var sorted = samples.Order().ToArray();
+                // Suspend fixture updates only for the isolated cursor/cache measurement.
+                stress?.PauseUpdates();
+                var builds = page.Chart.GeometryBuildCount;
+                var hoverAlloc = GC.GetAllocatedBytesForCurrentThread();
+                var hoverWatch = Stopwatch.StartNew();
+                var bounds = page.Chart.PlotBounds(true);
+                for (var move = 0; move < 1000; move++)
+                {
+                    var x = bounds.Left + move % bounds.Width; var y = bounds.Top + bounds.Height / 2;
+                    SendMessage(page.Chart.Handle, 0x200, IntPtr.Zero, (IntPtr)((y << 16) | (x & 0xffff)));
+                    if (move % 50 == 0) page.Chart.Refresh();
+                }
+                var hover = new { Moves = 1000, ElapsedMs = hoverWatch.Elapsed.TotalMilliseconds,
+                    AllocatedBytes = GC.GetAllocatedBytesForCurrentThread() - hoverAlloc,
+                    GeometryBuilds = page.Chart.GeometryBuildCount - builds, CachedPoints = page.Chart.CachedPointCount,
+                    Method = "Own chart HWND WM_MOUSEMOVE; 20 synchronous paints; allocations include input/labels/GDI wrappers, not just hit testing" };
                 var after = Resources();
                 var buttons = page.Chart.RangeButtons.Select(b => new {
                     b.Text, b.Width, b.Height, b.Left, b.Right,
@@ -104,8 +144,9 @@ internal static class Program
                 {
                     Assembly = typeof(MonitorForm).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
                     OS = Environment.OSVersion.ToString(), Dpi = form.DeviceDpi, Screens = Screen.AllScreens.Select(s => new { s.Bounds, s.WorkingArea, s.Primary }),
-                    ForegroundProcess = foregroundName, Method = "SystemAware WinForms message loop; native PerformClick -> target subtree synchronous WM_PAINT; 100 hot memory-to-network transitions. No HTML.",
-                    Samples = samples, MedianMs = sorted[49], P95Ms = sorted[94], MaxMs = sorted[^1],
+                    ForegroundProcess = foregroundName, ProcessArchitecture = RuntimeInformation.ProcessArchitecture.ToString(), LogicalProcessors = Environment.ProcessorCount, Method = "SystemAware WinForms message loop; native PerformClick -> target subtree synchronous WM_PAINT; 100 hot memory-to-network transitions. No HTML.",
+                    Scenario = scenario, FixtureUpdatesDuringTransitions = stress is not null, Frames = frames, Hover = hover,
+                    Samples = samples, MedianMs = (sorted[49] + sorted[50]) / 2, P95Ms = sorted[94], P99Ms = sorted[98], MaxMs = sorted[^1], Over100Ms = sorted.Count(s => s > 100),
                     Before = before, After = after, Buttons = buttons, DpiTextLayoutChecks = dpiChecks,
                     DpiLimit = "Only current desktop DPI is a live display measurement. 120/144/192 entries are native GDI text/width stress checks; OS DPI switching and cross-monitor behavior not verified.",
                     Snapshot = new { coordinator.Network.Current.State, coordinator.Network.Current.Capabilities, Interfaces = coordinator.Network.Current.Interfaces.Count },

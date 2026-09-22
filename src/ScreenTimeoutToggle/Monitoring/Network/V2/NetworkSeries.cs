@@ -7,7 +7,12 @@ public static class NetworkSeries
     public sealed record Point(DateTimeOffset At, double Value, RateSample Sample);
     public sealed record Gap(DateTimeOffset From, DateTimeOffset To, string Reason);
     public sealed record DirectionPlot(IReadOnlyList<IReadOnlyList<Point>> Runs, IReadOnlyList<Point> Raw,
-        IReadOnlyList<Gap> Gaps, double? Peak);
+        IReadOnlyList<Gap> Gaps, double? Peak)
+    {
+        // Includes explicit unknown observations; segment identities survive thinning.
+        public IReadOnlyList<ProbeObservation> ProbeIndex { get; init; } = [];
+    }
+    public sealed record ProbeObservation(DateTimeOffset At, double? Value, int Segment, RateSample Sample);
     public sealed record Projection(DateTimeOffset From, DateTimeOffset To, Directions<DirectionPlot> Directions);
     public sealed record Axis(string Key, double Max, double? LowSince, double ChangedAt);
 
@@ -87,9 +92,13 @@ public static class NetworkSeries
             var gaps = new List<Gap>();
             void Flush() { if (run.Count > 0) runs.Add(run); run = []; }
             RateSample? prev = null;
+            var index = new List<ProbeObservation>(); var segment = 0;
             foreach (var s in samples)
             {
                 var reason = Boundary(prev, s, upload);
+                if (reason is not null || s.Rates[upload] is null || prev?.Rates[upload] is null) segment++;
+                if (s.SampledAt >= from && s.SampledAt <= now)
+                    index.Add(new(s.SampledAt, s.Rates[upload], segment, s));
                 if (reason is not null && prev is not null)
                 {
                     Flush();
@@ -112,16 +121,30 @@ public static class NetworkSeries
             Flush();
             var visible = runs.Select(r => (IReadOnlyList<Point>)r.Where(p => p.At >= from && p.At <= now).ToArray()).Where(r => r.Count > 0).ToArray();
             var raw = visible.SelectMany(r => r).ToArray();
-            return new(visible.Select(r => Thin(r)).ToArray(), raw, gaps, raw.Length == 0 ? null : raw.Max(p => p.Value));
+            return new(visible.Select(r => Thin(r)).ToArray(), raw, gaps, raw.Length == 0 ? null : raw.Max(p => p.Value))
+            { ProbeIndex = index.OrderBy(p => p.At).ToArray() };
         }
         return new(from, now, new(Build(true), Build(false)));
     }
-    public static double? Probe(DirectionPlot dir, DateTimeOffset at)
+    public static double? Probe(DirectionPlot dir, DateTimeOffset at) => ProbeSample(dir, at)?.Value;
+    public static ProbeObservation? ProbeSample(DirectionPlot dir, DateTimeOffset at)
     {
-        if (dir.Raw.Count == 0 || dir.Gaps.Any(g => at > g.From.AddMilliseconds(1) && at < g.To.AddMilliseconds(-1))) return null;
-        var p = dir.Raw.MinBy(p => Math.Abs((p.At - at).TotalMilliseconds))!;
-        var tolerance = Math.Max(500, (p.Sample.Cadence.HistoryIntervalMs ?? 0) * .55);
-        return Math.Abs((p.At - at).TotalMilliseconds) <= tolerance ? p.Value : null;
+        var points = dir.ProbeIndex;
+        int lo = 0, hi = points.Count;
+        while (lo < hi)
+        {
+            var mid = lo + (hi - lo) / 2;
+            if (points[mid].At < at) lo = mid + 1; else hi = mid;
+        }
+        if (lo < points.Count && points[lo].At == at)
+            return points[lo].Value is not null ? points[lo] : null;
+        // Never extend an isolated point, cross an unknown, or borrow across an edge.
+        if (lo == 0 || lo == points.Count) return null;
+        var before = points[lo - 1]; var after = points[lo];
+        if (before.Value is null || after.Value is null || before.Segment != after.Segment) return null;
+        var point = at - before.At <= after.At - at ? before : after;
+        var tolerance = Math.Max(500, (point.Sample.Cadence.HistoryIntervalMs ?? 0) * .55);
+        return Math.Abs((point.At - at).TotalMilliseconds) <= tolerance ? point : null;
     }
     public static double NiceCeiling(double? peak)
     {

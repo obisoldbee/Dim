@@ -20,7 +20,11 @@ public sealed class NetworkObservationService : INetworkObservationSource, IDisp
     private readonly Dictionary<string, Track> _tracks = new(StringComparer.OrdinalIgnoreCase);
     private ITimer? _timer;
     private int _busy;
-    private long _generation, _version;
+    private long _generation, _version, _readStarted;
+    public static readonly TimeSpan ReadDeadline = TimeSpan.FromSeconds(5);
+    public double LastCurrentLockWaitMs { get; private set; }
+    public double LastReadMs { get; private set; }
+    public double LastPublishMs { get; private set; }
     private bool _running, _disposed;
     private ObservationSnapshot _current = ObservationSnapshot.Empty;
     private string _session = "";
@@ -43,7 +47,18 @@ public sealed class NetworkObservationService : INetworkObservationSource, IDisp
         _schedule = schedule;
     }
     public event Action? Changed;
-    public ObservationSnapshot Current { get { lock (_gate) return _current; } }
+    public ObservationSnapshot Current
+    {
+        get
+        {
+            var start = System.Diagnostics.Stopwatch.GetTimestamp();
+            lock (_gate)
+            {
+                LastCurrentLockWaitMs = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+                return _current;
+            }
+        }
+    }
     public bool IsRunning { get { lock (_gate) return _running; } }
     public bool Busy => Volatile.Read(ref _busy) != 0;
 
@@ -59,7 +74,7 @@ public sealed class NetworkObservationService : INetworkObservationSource, IDisp
             {
                 _session = Guid.NewGuid().ToString("N");
                 _tracks.Clear();
-                _current = new(++_version, _session, _time.GetUtcNow(), "starting", null, null, []);
+                _current = new(++_version, _session, _time.GetUtcNow(), Busy ? "waiting" : "starting", Busy ? "old-read-pending" : null, null, []);
                 if (_schedule) _timer = _time.CreateTimer(_ => Poll(), null, TimeSpan.Zero, TimeSpan.FromSeconds(1));
             }
             else
@@ -71,12 +86,17 @@ public sealed class NetworkObservationService : INetworkObservationSource, IDisp
 
     internal void Poll()
     {
-        if (Interlocked.CompareExchange(ref _busy, 1, 0) != 0) return;
+        if (Interlocked.CompareExchange(ref _busy, 1, 0) != 0) { CheckReadDeadline(); return; }
         var notify = false;
         try
         {
             long generation;
-            lock (_gate) { if (!_running || _disposed) return; generation = _generation; }
+            lock (_gate)
+            {
+                if (!_running || _disposed) return;
+                generation = _generation; _readStarted = _time.GetTimestamp();
+            }
+            var readStart = System.Diagnostics.Stopwatch.GetTimestamp();
             IReadOnlyList<InterfaceCounterRow> rows;
             NetworkReadStatus status;
             string? error, route = null;
@@ -89,6 +109,8 @@ public sealed class NetworkObservationService : INetworkObservationSource, IDisp
             {
                 rows = []; status = NetworkReadStatus.Failed; error = ex.GetType().Name;
             }
+            LastReadMs = System.Diagnostics.Stopwatch.GetElapsedTime(readStart).TotalMilliseconds;
+            var publishStart = System.Diagnostics.Stopwatch.GetTimestamp();
             var now = _time.GetUtcNow();
             var mono = (ulong)((decimal)_time.GetTimestamp() * 1_000_000_000m / _time.TimestampFrequency);
             lock (_gate)
@@ -122,12 +144,30 @@ public sealed class NetworkObservationService : INetworkObservationSource, IDisp
                     }
                     var actualRoute = observations.FirstOrDefault(i => i.Available && string.Equals(i.Id, route, StringComparison.OrdinalIgnoreCase))?.Id;
                     _current = new(++_version, _session, now, "active",
-                        rows.Count > MaxInterfaces ? "interface-limit" : null, actualRoute, observations);
+                        rows.Count > MaxInterfaces ? "interface-limit" : null, actualRoute, observations)
+                    { SourceInterfaceCount = rows.Count };
                 }
                 notify = true;
             }
+            LastPublishMs = System.Diagnostics.Stopwatch.GetElapsedTime(publishStart).TotalMilliseconds;
         }
         finally { Volatile.Write(ref _busy, 0); }
+        if (notify) Changed?.Invoke();
+    }
+    // A timer checks the one synchronous worker; no replacement worker is spawned.
+    // Stop/dispose fence its result, but cannot cancel an OS API that never returns.
+    private void CheckReadDeadline()
+    {
+        var notify = false;
+        lock (_gate)
+        {
+            if (_disposed || !_running || !Busy || _current.State == "stalled") return;
+            if (_time.GetElapsedTime(_readStarted) < ReadDeadline) return;
+            _current = _current with { Version = ++_version, PublishedAt = _time.GetUtcNow(),
+                State = "stalled", Reason = "read-timeout" };
+            foreach (var track in _tracks.Values) track.PendingGap = "source-gap";
+            notify = true;
+        }
         if (notify) Changed?.Invoke();
     }
     private InterfaceReading Observe(Track t, InterfaceCounterRow row, DateTimeOffset now, ulong mono, int capacity)

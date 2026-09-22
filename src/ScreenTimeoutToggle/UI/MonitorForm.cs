@@ -134,8 +134,7 @@ public sealed class MonitorForm : Form
         _networkView = new NetworkPage(coordinator.Network, enabled =>
         {
             var settings = coordinator.Settings with { NetworkEnabled = enabled };
-            if (!coordinator.SaveSettings(settings)) return false;
-            coordinator.ApplySettings(settings); return true;
+            return coordinator.ApplyAndSaveSettingsAsync(settings);
         }) { Dock = DockStyle.Fill };
 
         FormBorderStyle = FormBorderStyle.None;
@@ -216,6 +215,8 @@ public sealed class MonitorForm : Form
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
+        if (e.KeyCode == Keys.Escape && _currentView == View.Network && _networkView.HandleEscape())
+        { e.Handled = e.SuppressKeyPress = true; return; }
         if (e.KeyCode == Keys.Escape && !ChartOwnsKey(e.KeyCode))
         {
             Hide();
@@ -250,6 +251,7 @@ public sealed class MonitorForm : Form
     /// </summary>
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
+        if (keyData == Keys.Escape && _currentView == View.Network && _networkView.HandleEscape()) return true;
         if (!IsTextInputActive() && !ChartOwnsKey(keyData))
         {
             switch (keyData)
@@ -277,7 +279,14 @@ public sealed class MonitorForm : Form
         return base.ProcessCmdKey(ref msg, keyData);
     }
 
-    private bool IsTextInputActive() => ActiveControl is TextBox or NumericUpDown or ComboBox;
+    private bool IsTextInputActive()
+    {
+        Control? leaf = ActiveControl;
+        while (leaf is ContainerControl container && container.ActiveControl is { } child) leaf = child;
+        // Panels need not be ContainerControls. Follow ContainsFocus to the leaf.
+        while (leaf?.Controls.Cast<Control>().FirstOrDefault(c => c.ContainsFocus) is { } child) leaf = child;
+        return leaf is TextBoxBase or NumericUpDown or ComboBox;
+    }
 
     /// <summary>
     /// True when the chart has focus and the key belongs to it. Escape is shared: the first press

@@ -36,6 +36,9 @@ public sealed record ObservationSnapshot(long Version, string SessionID, DateTim
     string State, string? Reason, string? SystemInterfaceID, IReadOnlyList<InterfaceReading> Interfaces)
 {
     public const string SchemaVersion = "obdim.network.observation.v2";
+    public int SourceInterfaceCount { get; init; }
+    public int RetainedInterfaceCount => Interfaces.Count;
+    public bool InterfaceCoverageLimited => SourceInterfaceCount > RetainedInterfaceCount;
     public string Origin => "native";
     public bool IsDemo => false;
     public ObservationCapabilities Capabilities { get; } = new();

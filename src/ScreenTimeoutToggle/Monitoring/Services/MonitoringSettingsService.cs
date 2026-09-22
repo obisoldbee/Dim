@@ -26,6 +26,7 @@ public sealed class MonitoringSettingsService
     };
 
     public string FilePath { get; }
+    internal Action<MonitoringSettings>? BeforeWrite { get; set; }
 
     /// <summary>True when the last Load found an unreadable file (backed up, defaults returned).</summary>
     public bool LastLoadWasRecovered { get; private set; }
@@ -87,6 +88,7 @@ public sealed class MonitoringSettingsService
     {
         try
         {
+            BeforeWrite?.Invoke(settings);
             var dir = Path.GetDirectoryName(FilePath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 

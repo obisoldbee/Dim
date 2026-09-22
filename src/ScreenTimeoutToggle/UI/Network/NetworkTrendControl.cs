@@ -13,20 +13,35 @@ public sealed class NetworkTrendControl : Control
     public static readonly Color DownloadColor = ColorTranslator.FromHtml("#087BFF");
     private static readonly TimeSpan[] Windows = [TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(10),
         TimeSpan.FromMinutes(30), TimeSpan.FromHours(1), TimeSpan.FromHours(2)];
-    private readonly Button[] _ranges = Enumerable.Range(0, 5).Select(_ => new Button()).ToArray();
+    private readonly Button[] _ranges = Enumerable.Range(0, 5).Select(_ => (Button)new RangeButton()).ToArray();
     private readonly Font _caption = new("Microsoft YaHei UI", 9F);
     private readonly Font _heading = new("Microsoft YaHei UI", 10F, FontStyle.Bold);
     private readonly Font _value = new("Microsoft YaHei UI", 19F, FontStyle.Bold);
     private readonly Font _small = new("Microsoft YaHei UI", 8F);
     private InterfaceReading? _reading;
-    private DateTimeOffset _now;
+    private DateTimeOffset _now = DateTimeOffset.UtcNow;
     private bool _fresh;
     private int _range = 3;
     private Projection _plot = Project([], null, DateTimeOffset.UtcNow, TimeSpan.FromHours(1));
     private Axis? _upAxis, _downAxis;
     private DateTimeOffset? _cursor;
     private bool _pinned;
-    private long _version = -1;
+    private sealed class RangeButton : Button
+    {
+        protected override bool IsInputKey(Keys keyData) => keyData is Keys.Left or Keys.Right or Keys.Home or Keys.End || base.IsInputKey(keyData);
+    }
+    private sealed record RunGeometry(PointF[] Points, GraphicsPath? Area) : IDisposable
+    { public void Dispose() => Area?.Dispose(); }
+    private RunGeometry[][] _geometry = [[], []];
+    private string[][] _axisLabels = [[], []];
+    private string[] _times = [];
+    private GraphicsPath? _border;
+    private DateTimeOffset[] _keyboardTimes = [];
+    private string _cursorNote = "";
+    public double LastProjectionMs { get; private set; }
+    public double LastGeometryMs { get; private set; }
+    public double LastPaintMs { get; private set; }
+    public int CachedPointCount => _geometry.Sum(d => d.Sum(r => r.Points.Length));
     public int GeometryBuildCount { get; private set; }
     public int PaintCount { get; private set; }
     public bool HasReading => _cursor is not null;
@@ -64,7 +79,7 @@ public sealed class NetworkTrendControl : Control
         var labels = English ? new[] { "1 min", "10 min", "30 min", "1 hour", "2 hours" } :
             new[] { "1 分钟", "10 分钟", "30 分钟", "1 小时", "2 小时" };
         for (var i = 0; i < 5; i++) { _ranges[i].Text = labels[i]; _ranges[i].AccessibleName = labels[i]; }
-        AccessibleName = T("网络流量趋势", "Network traffic trend"); StyleRanges(); Invalidate();
+        AccessibleName = T("网络流量趋势", "Network traffic trend"); StyleRanges(); RebuildGeometry(); UpdateDescription(); Invalidate();
     }
     public void SetRange(int value)
     {
@@ -78,54 +93,91 @@ public sealed class NetworkTrendControl : Control
     }
     public void Apply(InterfaceReading? reading, DateTimeOffset now, long version, bool fresh)
     {
-        var changed = _version != version || _reading?.Id != reading?.Id || _fresh != fresh;
-        _reading = reading; _now = now; _version = version; _fresh = fresh;
-        if (changed) Prepare();
+        var changed = !ReferenceEquals(_reading?.Samples, reading?.Samples) || _reading?.Id != reading?.Id;
+        var identityChanged = _reading?.Id != reading?.Id;
+        _reading = reading; _fresh = fresh;
+        if (identityChanged) { _cursor = null; _pinned = false; }
+        // Freeze the history window between source updates. Health/publication-only
+        // changes update labels without rebuilding identical history geometry.
+        if (changed) { _now = now; Prepare(); }
+        else Invalidate();
     }
     private void Prepare()
     {
+        var watch = Stopwatch.GetTimestamp();
         _plot = Project(_reading?.Samples ?? [], _reading?.Id, _now, Windows[_range]);
-        GeometryBuildCount++;
+        _keyboardTimes = _plot.Directions.Upload.ProbeIndex.Select(p => p.At)
+            .Concat(_plot.Directions.Download.ProbeIndex.Select(p => p.At)).Distinct().Order().ToArray();
+        LastProjectionMs = Stopwatch.GetElapsedTime(watch).TotalMilliseconds;
         var key = $"{_reading?.Id}:{_range}";
         var monotonicMs = Stopwatch.GetTimestamp() * 1000.0 / Stopwatch.Frequency;
         _upAxis = UpdateAxis(_upAxis, _plot.Directions.Upload.Peak, monotonicMs, key);
         _downAxis = UpdateAxis(_downAxis, _plot.Directions.Download.Peak, monotonicMs, key);
         if (_cursor < _plot.From || _cursor > _plot.To) { _cursor = null; _pinned = false; }
-        UpdateDescription(); Invalidate();
+        RebuildGeometry(); UpdateDescription(); Invalidate();
     }
+    private float X(DateTimeOffset at, Rectangle bounds) => bounds.Left + (float)((at - _plot.From).TotalSeconds / Windows[_range].TotalSeconds * bounds.Width);
+    private void RebuildGeometry()
+    {
+        var watch = Stopwatch.GetTimestamp();
+        foreach (var direction in _geometry) foreach (var run in direction) run.Dispose();
+        _border?.Dispose();
+        _border = Rounded(new Rectangle(0, 0, Math.Max(1, Width - 1), Math.Max(1, Height - 1)), S(12));
+        for (var d = 0; d < 2; d++)
+        {
+            var upload = d == 0; var bounds = PlotBounds(upload);
+            var axis = (upload ? _upAxis : _downAxis)?.Max ?? 1;
+            _axisLabels[d] = Enumerable.Range(0, 3).Select(i => Rate(axis * (2 - i) / 2)).ToArray();
+            _geometry[d] = _plot.Directions[upload].Runs.Select(run =>
+            {
+                var points = run.Select(p => new PointF(X(p.At, bounds), bounds.Bottom - (float)(p.Value / axis * bounds.Height))).ToArray();
+                GraphicsPath? area = null;
+                if (points.Length > 1)
+                {
+                    area = new GraphicsPath(); area.AddLines(points);
+                    area.AddLine(points[^1], new(points[^1].X, bounds.Bottom));
+                    area.AddLine(new PointF(points[^1].X, bounds.Bottom), new PointF(points[0].X, bounds.Bottom)); area.CloseFigure();
+                }
+                return new RunGeometry(points, area);
+            }).ToArray();
+        }
+        _times = Enumerable.Range(0, 3).Select(i => (_plot.From + TimeSpan.FromTicks((_plot.To - _plot.From).Ticks * i / 2)).LocalDateTime.ToString("HH:mm:ss")).ToArray();
+        GeometryBuildCount++;
+        LastGeometryMs = Stopwatch.GetElapsedTime(watch).TotalMilliseconds;
+    }
+    protected override void OnDpiChangedAfterParent(EventArgs e)
+    { base.OnDpiChangedAfterParent(e); RebuildGeometry(); Invalidate(); }
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
         var x = S(12); var width = Math.Max(5, Width - S(24));
         for (var i = 0; i < 5; i++)
             _ranges[i].SetBounds(x + width * i / 5, S(42), width * (i + 1) / 5 - width * i / 5, S(32));
+        RebuildGeometry();
     }
     public Rectangle PlotBounds(bool upload) => new(S(78), S(upload ? 184 : 393),
         Math.Max(1, Width - S(96)), S(80));
     protected override void OnPaint(PaintEventArgs e)
     {
+        var paintStart = Stopwatch.GetTimestamp();
         base.OnPaint(e); PaintCount++;
         var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
         using var border = new Pen(Color.FromArgb(231, 233, 238));
-        using var path = Rounded(new Rectangle(0, 0, Math.Max(1, Width - 1), Math.Max(1, Height - 1)), S(12));
-        g.DrawPath(border, path);
+        if (_border is not null) g.DrawPath(border, _border);
         DrawLabel(g, T("流量趋势", "Traffic trend"), _heading, Color.FromArgb(48, 54, 65), new(S(12), S(12), Width - S(24), S(25)));
         DrawLabel(g, T("独立刻度", "Independent axes"), _small, Color.DimGray, new(Width - S(150), S(13), S(138), S(22)), true);
         DrawDirection(g, true); DrawDirection(g, false);
         g.DrawLine(border, S(12), S(285), Width - S(12), S(285));
         g.DrawLine(border, S(12), S(509), Width - S(12), S(509));
         var lower = PlotBounds(false);
-        foreach (var fraction in new[] { 0.0, .5, 1.0 })
+        for (var i = 0; i < _times.Length; i++)
         {
-            var time = _plot.From + TimeSpan.FromTicks((long)((_plot.To - _plot.From).Ticks * fraction));
-            var rect = new Rectangle(lower.Left + (int)(lower.Width * fraction) - S(34), lower.Bottom + S(7), S(70), S(20));
-            DrawLabel(g, time.LocalDateTime.ToString("HH:mm:ss"), _small, Color.DimGray, rect);
+            var rect = new Rectangle(lower.Left + lower.Width * i / 2 - S(34), lower.Bottom + S(7), S(70), S(20));
+            DrawLabel(g, _times[i], _small, Color.DimGray, rect);
         }
-        var note = _cursor is { } at
-            ? $"{at.LocalDateTime:HH:mm:ss}   ↑ {Rate(Probe(_plot.Directions.Upload, at), T("未知", "Unknown"))}   ↓ {Rate(Probe(_plot.Directions.Download, at), T("未知", "Unknown"))}"
-            : T("独立缩放：上下两图等高不代表等速", "Independent scales: equal height does not mean equal speed");
-        DrawLabel(g, note, _small, Color.DimGray, new(S(12), S(516), Width - S(24), S(27)));
+        DrawLabel(g, _cursorNote, _small, Color.DimGray, new(S(12), S(516), Width - S(24), S(27)));
         if (Focused) ControlPaint.DrawFocusRectangle(g, new Rectangle(S(4), S(80), Width - S(8), S(384)));
+        LastPaintMs = Stopwatch.GetElapsedTime(paintStart).TotalMilliseconds;
         FramePainted?.Invoke();
     }
     private void DrawDirection(Graphics g, bool upload)
@@ -147,29 +199,26 @@ public sealed class NetworkTrendControl : Control
         {
             var y = bounds.Top + bounds.Height * i / 2;
             g.DrawLine(grid, bounds.Left, y, bounds.Right, y);
-            DrawLabel(g, Rate(axis * (2 - i) / 2), _small, Color.DimGray, new(S(3), y - S(9), S(70), S(20)), true);
+            DrawLabel(g, _axisLabels[upload ? 0 : 1][i], _small, Color.DimGray, new(S(3), y - S(9), S(70), S(20)), true);
         }
         for (var i = 0; i < 5; i++)
         { var x = bounds.Left + bounds.Width * i / 4; g.DrawLine(grid, x, bounds.Top, x, bounds.Bottom); }
         if (dir.Raw.Count == 0)
             DrawLabel(g, T("暂无已知速率", "No known samples"), _small, Color.DimGray, bounds);
-        float X(DateTimeOffset at) => bounds.Left + (float)((at - _plot.From).TotalSeconds / Windows[_range].TotalSeconds * bounds.Width);
         using var stroke = new Pen(color, Math.Max(1.5f, DeviceDpi / 64f));
         using var fill = new SolidBrush(Color.FromArgb(20, color));
         using var dot = new SolidBrush(color);
-        foreach (var run in dir.Runs)
+        foreach (var run in _geometry[upload ? 0 : 1])
         {
-            var pts = run.Select(p => new PointF(X(p.At), bounds.Bottom - (float)(p.Value / axis * bounds.Height))).ToArray();
+            var pts = run.Points;
             if (pts.Length == 1) { g.FillEllipse(dot, pts[0].X - S(2), pts[0].Y - S(2), S(4), S(4)); continue; }
-            using var area = new GraphicsPath();
-            area.AddLines(pts); area.AddLine(pts[^1], new(pts[^1].X, bounds.Bottom));
-            area.AddLine(new PointF(pts[^1].X, bounds.Bottom), new PointF(pts[0].X, bounds.Bottom)); area.CloseFigure();
-            g.FillPath(fill, area); g.DrawLines(stroke, pts);
+            if (run.Area is not null) g.FillPath(fill, run.Area);
+            g.DrawLines(stroke, pts);
         }
         if (_cursor is { } cursor)
         {
             using var pen = new Pen(Color.Gray) { DashStyle = DashStyle.Dash };
-            g.DrawLine(pen, X(cursor), bounds.Top, X(cursor), bounds.Bottom);
+            g.DrawLine(pen, X(cursor, bounds), bounds.Top, X(cursor, bounds), bounds.Bottom);
         }
     }
     private static void DrawLabel(Graphics g, string value, Font font, Color color, Rectangle bounds, bool right = false) =>
@@ -188,33 +237,64 @@ public sealed class NetworkTrendControl : Control
         if (_pinned) return;
         var p = PlotBounds(true); var lower = PlotBounds(false);
         if (!p.Contains(e.Location) && !lower.Contains(e.Location)) return;
-        _cursor = _plot.From + TimeSpan.FromSeconds(Windows[_range].TotalSeconds * Math.Clamp((e.X - p.Left) / (double)p.Width, 0, 1));
-        UpdateDescription(); Invalidate();
+        SetCursor(_plot.From + TimeSpan.FromSeconds(Windows[_range].TotalSeconds * Math.Clamp((e.X - p.Left) / (double)p.Width, 0, 1)));
     }
-    protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); if (!_pinned && !Focused) { _cursor = null; UpdateDescription(); Invalidate(); } }
+    protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); if (!_pinned && !Focused) { SetCursor(null); } }
     protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); if (e.Y >= S(80)) { Focus(); _pinned = !_pinned; } }
     protected override bool IsInputKey(Keys keyData) => keyData is Keys.Left or Keys.Right or Keys.Home or Keys.End or Keys.Space or Keys.Escape || base.IsInputKey(keyData);
     protected override void OnKeyDown(KeyEventArgs e)
     {
-        var points = _plot.Directions.Upload.Raw.Concat(_plot.Directions.Download.Raw).Select(p => p.At).Distinct().Order().ToArray();
+        var points = _keyboardTimes;
+        var previous = _cursor;
         if (e.KeyCode == Keys.Escape) { _cursor = null; _pinned = false; }
         else if (e.KeyCode == Keys.Space) _pinned = !_pinned;
         else if (points.Length > 0)
         {
-            var index = _cursor is null ? points.Length - 1 : Array.FindIndex(points, p => p >= _cursor);
-            if (index < 0) index = points.Length - 1;
+            var index = _cursor is null ? points.Length - 1 : Array.BinarySearch(points, _cursor.Value);
+            if (index < 0) index = Math.Min(~index, points.Length - 1);
             var next = e.KeyCode switch { Keys.Left => Math.Max(0, index - 1), Keys.Right => Math.Min(points.Length - 1, index + 1), Keys.Home => 0, Keys.End => points.Length - 1, _ => -1 };
             if (next < 0) { base.OnKeyDown(e); return; }
             _cursor = points[next]; _pinned = true;
         }
-        e.Handled = e.SuppressKeyPress = true; UpdateDescription(); Invalidate();
+        e.Handled = e.SuppressKeyPress = true; InvalidateCursor(previous); UpdateDescription(); InvalidateCursor(_cursor);
+    }
+    public void ClearReading() { _pinned = false; SetCursor(null); }
+    internal void SetCursor(DateTimeOffset? value)
+    {
+        if (_cursor == value) return;
+        InvalidateCursor(_cursor); _cursor = value; UpdateDescription(); InvalidateCursor(_cursor);
+    }
+    private void InvalidateCursor(DateTimeOffset? value)
+    {
+        if (value is { } at)
+            foreach (var upload in new[] { true, false })
+            {
+                var bounds = PlotBounds(upload);
+                Invalidate(new Rectangle((int)X(at, bounds) - S(3), bounds.Top - S(2), S(7), bounds.Height + S(4)));
+            }
+        Invalidate(new Rectangle(S(12), S(516), Math.Max(1, Width - S(24)), S(27)));
     }
     private void UpdateDescription()
     {
-        AccessibleDescription = _cursor is { } at
-            ? $"{at.LocalDateTime:HH:mm:ss}; {T("上传", "Upload")} {Rate(Probe(_plot.Directions.Upload, at), T("未知", "Unknown"))}; {T("下载", "Download")} {Rate(Probe(_plot.Directions.Download, at), T("未知", "Unknown"))}"
+        string Reading(bool upload, DateTimeOffset at)
+        {
+            var sample = ProbeSample(_plot.Directions[upload], at);
+            return sample is null ? T("未知", "Unknown") : $"{Rate(sample.Value)} @{sample.At.LocalDateTime:HH:mm:ss.fff}";
+        }
+        _cursorNote = _cursor is { } at
+            ? $"↑ {Reading(true, at)}   ↓ {Reading(false, at)}"
+            : T("独立缩放：上下两图等高不代表等速", "Independent scales: equal height does not mean equal speed");
+        AccessibleDescription = _cursor is { } cursor
+            ? $"{T("查看", "Inspect")} {cursor.LocalDateTime:HH:mm:ss.fff}; {T("上传", "Upload")} {Reading(true, cursor)}; {T("下载", "Download")} {Reading(false, cursor)}"
             : T("上下行独立纵轴；方向键查看，空格固定，Escape清除", "Independent axes; arrows inspect, Space pins, Escape clears");
     }
     protected override void Dispose(bool disposing)
-    { base.Dispose(disposing); if (disposing) { _caption.Dispose(); _heading.Dispose(); _value.Dispose(); _small.Dispose(); } }
+    {
+        base.Dispose(disposing);
+        if (disposing)
+        {
+            foreach (var direction in _geometry) foreach (var run in direction) run.Dispose();
+            _border?.Dispose(); _caption.Dispose(); _heading.Dispose(); _value.Dispose(); _small.Dispose();
+        }
+    }
 }

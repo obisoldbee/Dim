@@ -570,7 +570,26 @@ public sealed class MonitoringCoordinator : IDisposable
     public void RaiseQuotaStateChanged() => QuotaStateChanged?.Invoke();
 
     /// <summary>Persists settings; false means the write failed (caller reports, never fakes).</summary>
-    public bool SaveSettings(MonitoringSettings settings) => _settingsService.Save(settings);
+    private readonly object _saveQueueGate = new();
+    private Task<bool> _saveTail = Task.FromResult(true);
+
+    // Runtime changes happen on the caller's UI thread before any file IO. The tail
+    // orders every UI save and keeps a slow/failed write from racing the next write.
+    public Task<bool> ApplyAndSaveSettingsAsync(MonitoringSettings settings)
+    {
+        lock (_saveQueueGate)
+        {
+            if (_disposed) return Task.FromResult(false);
+            ApplySettings(settings);
+            var snapshot = Settings;
+            var previous = _saveTail;
+            return _saveTail = Task.Run(async () =>
+            {
+                try { await previous.ConfigureAwait(false); } catch (Exception) { /* keep the queue usable */ }
+                return _settingsService.Save(snapshot);
+            });
+        }
+    }
 
     public void Dispose()
     {

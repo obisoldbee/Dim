@@ -476,9 +476,7 @@ public class TrayApp : ApplicationContext
         var modeHotkeyApplied = _hotkeySvc.IsRegistered && Equals(app.Hotkey, _config.Hotkey);
         var panelApplied = TryChangePopoverHotkey(monitoring.PopoverHotkey);
         var effectiveMonitoring = panelApplied ? monitoring : monitoring with { PopoverHotkey = oldMonitoring.PopoverHotkey };
-        var monitoringSaved = _monitorCoordinator.SaveSettings(effectiveMonitoring);
-        if (monitoringSaved) _monitorCoordinator.ApplySettings(effectiveMonitoring);
-        else TryChangePopoverHotkey(oldMonitoring.PopoverHotkey);
+        var monitoringSaved = await _monitorCoordinator.ApplyAndSaveSettingsAsync(effectiveMonitoring);
         var powerApplied = await _lastSettingsPowerApply;
         return new(appSaved, monitoringSaved, modeHotkeyApplied, panelApplied, _lastSettingsAutoStartApplied, powerApplied);
     }

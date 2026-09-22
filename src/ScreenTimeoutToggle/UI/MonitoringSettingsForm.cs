@@ -452,7 +452,7 @@ public sealed class MonitoringSettingsForm : Form
     internal async Task SaveDraftAsync()
     {
         if (_saving) return;
-        var app = DraftApp(); var monitoring = DraftMonitoring();
+        var app = DraftApp(); var monitoring = MonitoringSettingsMerge.Apply(_baselineMonitoring, DraftMonitoring(), _coordinator.Settings);
         if (HotkeyService.KeyStringToVk(app.Hotkey.Key) == HotkeyService.KeyStringToVk(_panelHotkey.Captured.Key)
             && HotkeyService.ParseModifiers(app.Hotkey.Modifiers) == HotkeyService.ParseModifiers(_panelHotkey.Captured.Modifiers))
         { _status.Text = T("两个快捷键不能相同。", "The two shortcuts must be different."); return; }
@@ -464,8 +464,7 @@ public sealed class MonitoringSettingsForm : Form
             if (_apply is not null) result = await _apply(app, monitoring);
             else
             {
-                var saved = _coordinator.SaveSettings(monitoring);
-                if (saved) _coordinator.ApplySettings(monitoring);
+                var saved = await _coordinator.ApplyAndSaveSettingsAsync(monitoring);
                 result = new SettingsApplyResult(true, saved);
             }
             if (IsDisposed) return;
@@ -478,7 +477,7 @@ public sealed class MonitoringSettingsForm : Form
             if (!result.AutoStartApplied) failures.Add(T("自启动未生效", "Autostart not applied"));
             if (!result.PowerApplied) failures.Add(T("系统息屏时间未生效", "System display timeout not applied"));
             _status.Text = result.Success ? T("配置已保存，设置已生效。", "Configuration saved and settings applied.") : string.Join("；", failures);
-            if (result.Success) _savedFingerprint = Fingerprint();
+            if (result.Success) LoadDraft();
         }
         catch (Exception)
         { if (!IsDisposed) _status.Text = T("保存或应用失败；草稿已保留，请重试。", "Save or apply failed. Your draft is preserved; please retry."); }
