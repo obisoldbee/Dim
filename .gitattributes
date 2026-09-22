@@ -1,0 +1,2 @@
+# Preserve the handoff fixture bytes and published SHA256 values across platforms.
+tests/ScreenTimeoutToggle.Tests/Fixtures/NetworkV2/*.json -text
