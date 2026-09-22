@@ -1,0 +1,335 @@
+{
+  "origin": "fixture",
+  "samples": [
+    {
+      "sampleID": "en0:s1:e1:5710",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:20:10.000Z",
+      "publishedAt": "2026-09-20T09:20:10.220Z",
+      "monotonicNs": "65710000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 5000,
+        "regimeID": "hidden-5s",
+        "reason": "publication-thinning"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:5705",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:5705",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 30422,
+        "download": 184259
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:5715",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:20:15.000Z",
+      "publishedAt": "2026-09-20T09:20:15.220Z",
+      "monotonicNs": "65715000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 5000,
+        "regimeID": "hidden-5s",
+        "reason": "publication-thinning"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:5710",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:5710",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 29892,
+        "download": 169684
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:5720",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:20:20.000Z",
+      "publishedAt": "2026-09-20T09:20:20.220Z",
+      "monotonicNs": "65720000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 5000,
+        "regimeID": "hidden-5s",
+        "reason": "publication-thinning"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:5715",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:5715",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 29207,
+        "download": 155181
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:5725",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:20:25.000Z",
+      "publishedAt": "2026-09-20T09:20:25.220Z",
+      "monotonicNs": "65725000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 5000,
+        "regimeID": "hidden-5s",
+        "reason": "publication-thinning"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:5720",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:5720",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 28383,
+        "download": 158231
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:5730",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:20:30.000Z",
+      "publishedAt": "2026-09-20T09:20:30.220Z",
+      "monotonicNs": "65730000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 5000,
+        "regimeID": "hidden-5s",
+        "reason": "publication-thinning"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:5725",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:5725",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 27438,
+        "download": 161313
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:5930",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:23:50.000Z",
+      "publishedAt": "2026-09-20T09:23:50.220Z",
+      "monotonicNs": "65930000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 5000,
+        "regimeID": "hidden-5s",
+        "reason": "publication-thinning"
+      },
+      "continuity": {
+        "upload": {
+          "state": "break",
+          "previousSampleID": "en0:s1:e1:5730",
+          "reason": "source-gap"
+        },
+        "download": {
+          "state": "break",
+          "previousSampleID": "en0:s1:e1:5730",
+          "reason": "source-gap"
+        }
+      },
+      "rates": {
+        "upload": 29216,
+        "download": 159623
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:5935",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:23:55.000Z",
+      "publishedAt": "2026-09-20T09:23:55.220Z",
+      "monotonicNs": "65935000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 5000,
+        "regimeID": "hidden-5s",
+        "reason": "publication-thinning"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:5930",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:5930",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 26090,
+        "download": 156466
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:5940",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:24:00.000Z",
+      "publishedAt": "2026-09-20T09:24:00.220Z",
+      "monotonicNs": "65940000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 5000,
+        "regimeID": "hidden-5s",
+        "reason": "publication-thinning"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:5935",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:5935",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 23963,
+        "download": 153345
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:5945",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:24:05.000Z",
+      "publishedAt": "2026-09-20T09:24:05.220Z",
+      "monotonicNs": "65945000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 5000,
+        "regimeID": "hidden-5s",
+        "reason": "publication-thinning"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:5940",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:5940",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 23374,
+        "download": 150281
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:5950",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:24:10.000Z",
+      "publishedAt": "2026-09-20T09:24:10.220Z",
+      "monotonicNs": "65950000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 5000,
+        "regimeID": "hidden-5s",
+        "reason": "publication-thinning"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:5945",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:5945",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 22782,
+        "download": 147293
+      }
+    }
+  ]
+}

@@ -22,7 +22,7 @@ public sealed record InterfaceCounterRow(
     string Name,
     InterfaceKind Kind,
     ulong? RxBytes,
-    ulong? TxBytes);
+    ulong? TxBytes, bool IsUp = true);
 
 /// <summary>
 /// One row of the PID-annotated connection table. UDP rows carry LOCAL endpoints only

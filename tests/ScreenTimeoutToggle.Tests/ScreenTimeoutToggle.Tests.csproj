@@ -29,4 +29,7 @@
     <None Include="Fixtures\Network\*.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="Fixtures\NetworkV2\*.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

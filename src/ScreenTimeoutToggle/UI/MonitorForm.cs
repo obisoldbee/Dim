@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -9,6 +9,7 @@ using OBDim.Monitoring.Providers;
 using OBDim.Monitoring.Services;
 using OBDim.Services;
 using OBDim.UI.Memory;
+using OBDim.UI.Network;
 using static OBDim.UI.UiPalette;
 
 namespace OBDim.UI;
@@ -24,7 +25,7 @@ public sealed class MonitorForm : Form
 
     private readonly ToolTip _toolTip = new();
 
-    public enum View { Quota, Memory }
+    public enum View { Quota, Memory, Network }
 
     public event Action? SettingsRequested;
     public event Action<ProviderId>? ProviderSettingsRequested;
@@ -35,12 +36,14 @@ public sealed class MonitorForm : Form
     private readonly Panel _header = new();
     private readonly Button _quotaSegment = new();
     private readonly Button _memorySegment = new();
+    private readonly Button _networkSegment = new();
+    private readonly NetworkPage _networkView;
     private readonly Panel _quotaUnderline = new();
     private readonly Button _refreshButton = new();
     private readonly Button _settingsButton = new();
 
     // Views
-    private readonly FlowLayoutPanel _quotaView = new();
+    private readonly FlowLayoutPanel _quotaView = new() { AccessibleName = "Quota sources" };
     private readonly Label _quotaHint = new();
     private readonly Panel _memoryView = new();
 
@@ -128,6 +131,12 @@ public sealed class MonitorForm : Form
     public MonitorForm(MonitoringCoordinator coordinator)
     {
         _coordinator = coordinator;
+        _networkView = new NetworkPage(coordinator.Network, enabled =>
+        {
+            var settings = coordinator.Settings with { NetworkEnabled = enabled };
+            if (!coordinator.SaveSettings(settings)) return false;
+            coordinator.ApplySettings(settings); return true;
+        }) { Dock = DockStyle.Fill };
 
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
@@ -151,6 +160,7 @@ public sealed class MonitorForm : Form
         // header, so the header reserves its strip first and the views take the rest.
         Controls.Add(_quotaView);
         Controls.Add(_memoryView);
+        Controls.Add(_networkView);
         Controls.Add(_header);
 
         _coordinator.QuotaStateChanged += OnQuotaChanged;
@@ -233,7 +243,7 @@ public sealed class MonitorForm : Form
     }
 
     /// <summary>
-    /// Tab / ← / → switch 额度↔内存 and 1/2/3 jump to a view — but only when the user is
+    /// Ctrl+Tab cycles quota/memory/network; 1/2/4 jump to them and 3 opens settings. Navigation is used only when the user is
     /// not typing into a text/numeric field on the settings page, and never over the chart's
     /// own arrow keys: there Left/Right walk the sampled points, which is the keyboard path to
     /// a reading.
@@ -244,14 +254,20 @@ public sealed class MonitorForm : Form
         {
             switch (keyData)
             {
-                case Keys.Tab or Keys.Right or Keys.Left:
-                    SetView(_currentView == View.Quota ? View.Memory : View.Quota);
+                case Keys.Control | Keys.Tab:
+                    SetView((View)(((int)_currentView + 1) % 3));
+                    return true;
+                case Keys.Right or Keys.Left:
+                    SetView((View)(((int)_currentView + (keyData == Keys.Left ? 2 : 1)) % 3));
                     return true;
                 case Keys.D1 or Keys.NumPad1:
                     SetView(View.Quota);
                     return true;
                 case Keys.D2 or Keys.NumPad2:
                     SetView(View.Memory);
+                    return true;
+                case Keys.D4 or Keys.NumPad4:
+                    SetView(View.Network);
                     return true;
                 case Keys.D3 or Keys.NumPad3:
                     SettingsRequested?.Invoke();
@@ -267,7 +283,7 @@ public sealed class MonitorForm : Form
     /// True when the chart has focus and the key belongs to it. Escape is shared: the first press
     /// retires the chart's reading, and only once nothing is showing does it dismiss the popover.
     /// </summary>
-    internal bool ChartOwnsKey(Keys keyData) => keyData switch
+    internal bool ChartOwnsKey(Keys keyData) => _currentView == View.Network && _networkView.OwnsKey(keyData) || keyData switch
     {
         Keys.Left or Keys.Right or Keys.Home or Keys.End => ActiveControl is MemoryTrendPanel,
         Keys.Escape => ActiveControl is MemoryTrendPanel { HasReading: true },
@@ -437,6 +453,8 @@ public sealed class MonitorForm : Form
 
         StyleTabButton(_memorySegment);
         _memorySegment.Click += (_, _) => SetView(View.Memory);
+        StyleTabButton(_networkSegment);
+        _networkSegment.Click += (_, _) => SetView(View.Network);
 
         _quotaUnderline.BackColor = Accent;
         _quotaUnderline.Visible = false;
@@ -472,6 +490,7 @@ public sealed class MonitorForm : Form
         _header.Controls.Add(_quotaUnderline);
         _header.Controls.Add(_quotaSegment);
         _header.Controls.Add(_memorySegment);
+        _header.Controls.Add(_networkSegment);
         _header.Controls.Add(_refreshButton);
         _header.Controls.Add(_settingsButton);
     }
@@ -494,6 +513,9 @@ public sealed class MonitorForm : Form
         if (view == View.Quota) Interlocked.Exchange(ref _quotaDirty, 1);
         _quotaView.Visible = view == View.Quota;
         _memoryView.Visible = view == View.Memory;
+        _networkView.Visible = view == View.Network;
+        _networkSegment.Font = view == View.Network ? _tabBoldFont : _tabRegularFont;
+        _networkSegment.ForeColor = view == View.Network ? TextStrong : TextSecondary;
         _quotaSegment.Font = view == View.Quota ? _tabBoldFont : _tabRegularFont;
         _memorySegment.Font = view == View.Memory ? _tabBoldFont : _tabRegularFont;
         _quotaSegment.ForeColor = view == View.Quota ? TextStrong : TextSecondary;
@@ -512,6 +534,7 @@ public sealed class MonitorForm : Form
     /// </summary>
     private void RequestRefreshForVisibleView()
     {
+        if (_currentView == View.Network) { _coordinator.Network.Refresh(); return; }
         if (_currentView == View.Memory)
         {
             _coordinator.RequestMemoryRefresh();
@@ -531,6 +554,12 @@ public sealed class MonitorForm : Form
     {
         if (IsDisposed) return;
 
+        if (_currentView == View.Network)
+        {
+            _refreshButton.Enabled = _coordinator.Network.IsRunning;
+            var networkText = LocalizationService.CurrentLanguage == "en-US" ? "Refresh network" : "刷新网络";
+            _refreshButton.AccessibleName = networkText; _toolTip.SetToolTip(_refreshButton, networkText); return;
+        }
         var onMemoryPage = _currentView == View.Memory;
         var text = onMemoryPage ? L("monitor.refresh_memory") : L("monitor.refresh_all");
         if (!_coordinator.Settings.MemoryEnabled) text = onMemoryPage ? L("monitor.refresh_memory_off") : text;
@@ -555,7 +584,9 @@ public sealed class MonitorForm : Form
         _quotaSegment.SetBounds(S(19), y, quotaWidth, tabHeight);
         _memorySegment.SetBounds(S(19) + quotaWidth + S(24), y, memoryWidth, tabHeight);
 
-        var selected = _currentView == View.Memory ? _memorySegment : _quotaSegment;
+        var networkWidth = TextRenderer.MeasureText(_networkSegment.Text, _networkSegment.Font).Width + S(12);
+        _networkSegment.SetBounds(_memorySegment.Right + S(16), y, networkWidth, tabHeight);
+        var selected = _currentView switch { View.Memory => _memorySegment, View.Network => _networkSegment, _ => _quotaSegment };
         _quotaUnderline.SetBounds(selected.Left, _header.Height - S(5), selected.Width, S(3));
         _quotaUnderline.Visible = true;
     }
@@ -596,6 +627,7 @@ public sealed class MonitorForm : Form
             {
                 Width = 508,
                 BackColor = Color.White,
+                AccessibleName = id.ToString() + " quota card",
                 Margin = new Padding(0, 0, 0, 12),
                 HeaderRuleY = 51,
             };
@@ -729,6 +761,7 @@ public sealed class MonitorForm : Form
         if (Interlocked.Exchange(ref _localizationDirty, 0) != 0) ApplyLocalization();
         if (_currentView == View.Quota && Interlocked.Exchange(ref _quotaDirty, 0) != 0) UpdateQuotaView();
         if (_currentView == View.Memory && Interlocked.Exchange(ref _memoryDirty, 0) != 0) UpdateMemoryView();
+        if (_currentView == View.Network) { _networkView.Render(); ApplyRefreshAffordance(); }
     }
 
     internal int QuotaRefreshCount { get; private set; }
@@ -1714,6 +1747,7 @@ public sealed class MonitorForm : Form
         Text = L("monitor.title");
         _quotaSegment.Text = L("monitor.tab_quota");
         _memorySegment.Text = L("monitor.tab_memory");
+        _networkSegment.Text = LocalizationService.CurrentLanguage == "en-US" ? "Network" : "网络";
         _refreshButton.Text = "⟳";
         _settingsButton.Text = "⚙";
         _quotaHint.Text = L("monitor.quota_all_disabled");

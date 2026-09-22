@@ -1,4 +1,5 @@
 using OBDim.Monitoring.Infrastructure;
+using OBDim.Monitoring.Network.V2;
 using OBDim.Monitoring.Models;
 using OBDim.Monitoring.Providers;
 using OBDim.Services;
@@ -71,7 +72,7 @@ public sealed class MonitoringCoordinator : IDisposable
         IReadOnlyDictionary<ProviderId, IProviderAdapter> adapters,
         MonitoringSettingsService settingsService,
         IMonitoringCache cache,
-        MemoryHistoryBuffer? memoryHistory = null)
+        MemoryHistoryBuffer? memoryHistory = null, INetworkObservationSource? network = null)
     {
         _clock = clock;
         _memoryReader = memoryReader;
@@ -79,6 +80,7 @@ public sealed class MonitoringCoordinator : IDisposable
         _settingsService = settingsService;
         _cache = cache;
         _memoryHistory = memoryHistory ?? new MemoryHistoryBuffer();
+        Network = network ?? new NetworkObservationService();
         _settings = _settingsService.Load();
 
         foreach (ProviderId id in Enum.GetValues<ProviderId>())
@@ -93,6 +95,8 @@ public sealed class MonitoringCoordinator : IDisposable
             _providerSlots[id] = new SemaphoreSlim(1, 1);
         }
     }
+
+    public INetworkObservationSource Network { get; }
 
     public MonitoringSettings Settings { get { lock (_stateLock) return _settings; } }
     public MemoryHistoryBuffer MemoryHistory => _memoryHistory;
@@ -126,6 +130,7 @@ public sealed class MonitoringCoordinator : IDisposable
     /// <summary>Loads settings and starts the memory sampler and the refresh scheduler.</summary>
     public void Start()
     {
+        Network.SetEnabled(Settings.NetworkEnabled);
         _memoryTimer = new System.Threading.Timer(
             _ => SampleMemory(),
             null,
@@ -509,6 +514,7 @@ public sealed class MonitoringCoordinator : IDisposable
         }
         ScanAndDispatch();
         RaiseQuotaStateChanged();
+        Network.SetEnabled(Settings.NetworkEnabled);
         SettingsApplied?.Invoke();
     }
 
@@ -574,6 +580,7 @@ public sealed class MonitoringCoordinator : IDisposable
         _memoryTimer?.Dispose();
         _schedulerTimer?.Dispose();
         _memoryReader.Dispose();
+        (Network as IDisposable)?.Dispose();
         // Workers own their linked CTS until finally. SemaphoreSlim has no native
         // wait handle here; retaining it until GC lets outstanding workers release safely.
     }

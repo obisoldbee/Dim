@@ -1,0 +1,38 @@
+{
+  "origin": "fixture",
+  "samples": [
+    {
+      "sampleID": "en0:s1:e1:7175",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:44:35.000Z",
+      "publishedAt": "2026-09-20T09:44:35.220Z",
+      "monotonicNs": "67175000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 1000,
+        "regimeID": "visible-1s",
+        "reason": "source-sampling"
+      },
+      "continuity": {
+        "upload": {
+          "state": "break",
+          "previousSampleID": null,
+          "reason": "start"
+        },
+        "download": {
+          "state": "break",
+          "previousSampleID": null,
+          "reason": "start"
+        }
+      },
+      "rates": {
+        "upload": 29944,
+        "download": 120591
+      }
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -94,7 +94,7 @@ internal static class Program
         var clock = new Clock();
         var adapters = Enum.GetValues<ProviderId>().ToDictionary(id => id, id => new Adapter(id, clock));
         var constructor = typeof(MonitoringCoordinator).GetConstructors().Single();
-        using var coordinator = (MonitoringCoordinator)constructor.Invoke([clock, new Memory(), adapters.ToDictionary(p => p.Key, p => (IProviderAdapter)p.Value), settings, new MonitoringCacheService(Path.Combine(fixture, "cache")), null]);
+        using var coordinator = (MonitoringCoordinator)constructor.Invoke([clock, new Memory(), adapters.ToDictionary(p => p.Key, p => (IProviderAdapter)p.Value), settings, new MonitoringCacheService(Path.Combine(fixture, "cache")), null, null]);
         var form = Create(coordinator);
         form.StartPosition = FormStartPosition.CenterScreen;
         form.Shown += async (_, _) =>

@@ -1,0 +1,666 @@
+{
+  "origin": "fixture",
+  "description": "Source continues at 1s; retained publication changes from 5s to 1s. Original cadence metadata is persisted.",
+  "samples": [
+    {
+      "sampleID": "en0:s1:e1:6880",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:39:40.000Z",
+      "publishedAt": "2026-09-20T09:39:40.220Z",
+      "monotonicNs": "66880000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 5000,
+        "regimeID": "hidden-5s",
+        "reason": "publication-thinning"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6875",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6875",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 30298,
+        "download": 152854
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:6885",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:39:45.000Z",
+      "publishedAt": "2026-09-20T09:39:45.220Z",
+      "monotonicNs": "66885000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 5000,
+        "regimeID": "hidden-5s",
+        "reason": "publication-thinning"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6880",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6880",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 29725,
+        "download": 156208
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:6890",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:39:50.000Z",
+      "publishedAt": "2026-09-20T09:39:50.220Z",
+      "monotonicNs": "66890000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 5000,
+        "regimeID": "hidden-5s",
+        "reason": "publication-thinning"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6885",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6885",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 29001,
+        "download": 159604
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:6895",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:39:55.000Z",
+      "publishedAt": "2026-09-20T09:39:55.220Z",
+      "monotonicNs": "66895000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 5000,
+        "regimeID": "hidden-5s",
+        "reason": "publication-thinning"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6890",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6890",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 29703,
+        "download": 163020
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:6900",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:40:00.000Z",
+      "publishedAt": "2026-09-20T09:40:00.220Z",
+      "monotonicNs": "66900000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 1000,
+        "regimeID": "visible-1s",
+        "reason": "source-sampling"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6895",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6895",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 31330,
+        "download": 166435
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:6901",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:40:01.000Z",
+      "publishedAt": "2026-09-20T09:40:01.220Z",
+      "monotonicNs": "66901000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 1000,
+        "regimeID": "visible-1s",
+        "reason": "source-sampling"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6900",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6900",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 31643,
+        "download": 167115
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:6902",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:40:02.000Z",
+      "publishedAt": "2026-09-20T09:40:02.220Z",
+      "monotonicNs": "66902000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 1000,
+        "regimeID": "visible-1s",
+        "reason": "source-sampling"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6901",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6901",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 31953,
+        "download": 167795
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:6903",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:40:03.000Z",
+      "publishedAt": "2026-09-20T09:40:03.220Z",
+      "monotonicNs": "66903000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 1000,
+        "regimeID": "visible-1s",
+        "reason": "source-sampling"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6902",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6902",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 32260,
+        "download": 168473
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:6904",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:40:04.000Z",
+      "publishedAt": "2026-09-20T09:40:04.220Z",
+      "monotonicNs": "66904000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 1000,
+        "regimeID": "visible-1s",
+        "reason": "source-sampling"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6903",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6903",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 32563,
+        "download": 169149
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:6905",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:40:05.000Z",
+      "publishedAt": "2026-09-20T09:40:05.220Z",
+      "monotonicNs": "66905000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 1000,
+        "regimeID": "visible-1s",
+        "reason": "source-sampling"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6904",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6904",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 32864,
+        "download": 173324
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:6906",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:40:06.000Z",
+      "publishedAt": "2026-09-20T09:40:06.220Z",
+      "monotonicNs": "66906000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 1000,
+        "regimeID": "visible-1s",
+        "reason": "source-sampling"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6905",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6905",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 33161,
+        "download": 177497
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:6907",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:40:07.000Z",
+      "publishedAt": "2026-09-20T09:40:07.220Z",
+      "monotonicNs": "66907000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 1000,
+        "regimeID": "visible-1s",
+        "reason": "source-sampling"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6906",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6906",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 33457,
+        "download": 181668
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:6908",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:40:08.000Z",
+      "publishedAt": "2026-09-20T09:40:08.220Z",
+      "monotonicNs": "66908000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 1000,
+        "regimeID": "visible-1s",
+        "reason": "source-sampling"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6907",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6907",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 33749,
+        "download": 185837
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:6909",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:40:09.000Z",
+      "publishedAt": "2026-09-20T09:40:09.220Z",
+      "monotonicNs": "66909000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 1000,
+        "regimeID": "visible-1s",
+        "reason": "source-sampling"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6908",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6908",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 34040,
+        "download": 190003
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:6910",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:40:10.000Z",
+      "publishedAt": "2026-09-20T09:40:10.220Z",
+      "monotonicNs": "66910000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 1000,
+        "regimeID": "visible-1s",
+        "reason": "source-sampling"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6909",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6909",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 34329,
+        "download": 194167
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:6911",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:40:11.000Z",
+      "publishedAt": "2026-09-20T09:40:11.220Z",
+      "monotonicNs": "66911000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 1000,
+        "regimeID": "visible-1s",
+        "reason": "source-sampling"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6910",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6910",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 34616,
+        "download": 198327
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:6912",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:40:12.000Z",
+      "publishedAt": "2026-09-20T09:40:12.220Z",
+      "monotonicNs": "66912000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 1000,
+        "regimeID": "visible-1s",
+        "reason": "source-sampling"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6911",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6911",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 34901,
+        "download": 202485
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:6913",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:40:13.000Z",
+      "publishedAt": "2026-09-20T09:40:13.220Z",
+      "monotonicNs": "66913000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 1000,
+        "regimeID": "visible-1s",
+        "reason": "source-sampling"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6912",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6912",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 35185,
+        "download": 206640
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:6914",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:40:14.000Z",
+      "publishedAt": "2026-09-20T09:40:14.220Z",
+      "monotonicNs": "66914000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 1000,
+        "regimeID": "visible-1s",
+        "reason": "source-sampling"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6913",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6913",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 35468,
+        "download": 210792
+      }
+    },
+    {
+      "sampleID": "en0:s1:e1:6915",
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "fixture-session-1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:40:15.000Z",
+      "publishedAt": "2026-09-20T09:40:15.220Z",
+      "monotonicNs": "66915000000000",
+      "rateWindowMs": 1000,
+      "cadence": {
+        "sourceIntervalMs": 1000,
+        "historyIntervalMs": 1000,
+        "regimeID": "visible-1s",
+        "reason": "source-sampling"
+      },
+      "continuity": {
+        "upload": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6914",
+          "reason": null
+        },
+        "download": {
+          "state": "continuous",
+          "previousSampleID": "en0:s1:e1:6914",
+          "reason": null
+        }
+      },
+      "rates": {
+        "upload": 35751,
+        "download": 214940
+      }
+    }
+  ]
+}

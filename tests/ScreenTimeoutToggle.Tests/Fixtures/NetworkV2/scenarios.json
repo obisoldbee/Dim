@@ -1,0 +1,28 @@
+{
+  "sourceCommit": "706824e4cc07914f4d8b55a89965cfd7c72ecb9e",
+  "origin": "fixture",
+  "generatedBy": "src/fixtures.js",
+  "scenarios": {
+    "normal": "日常流量",
+    "magnitude": "上下行相差 100 倍",
+    "spike": "长窗口尖峰",
+    "gap": "真实缺口",
+    "mixed": "5 秒 → 1 秒发布",
+    "replay": "旧快照重发",
+    "zero": "双向零流量",
+    "oneZero": "上传零 / 下载正常",
+    "unknown": "双向未知",
+    "oneUnknown": "上传未知 / 下载正常",
+    "single": "孤立单点",
+    "short": "历史不足",
+    "epoch": "epoch 切换",
+    "reset": "单向计数重置",
+    "counterUnavailable": "计数不可用",
+    "stopped": "未启用",
+    "partial": "当前部分覆盖",
+    "disconnected": "采集断连",
+    "stale": "速率过期",
+    "noNetwork": "自动网络未确认"
+  },
+  "note": "Synthetic, deterministic, not observations from the user machine. Full histories are generated offline by NetworkFixtures.make()."
+}

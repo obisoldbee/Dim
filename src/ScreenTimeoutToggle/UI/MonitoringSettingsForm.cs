@@ -31,6 +31,7 @@ public sealed class MonitoringSettingsForm : Form
     private readonly MonitorForm.HotkeyCaptureBox _panelHotkey = new() { Width = 230, ReadOnly = true };
     private readonly CheckBox _leftClick = new() { AutoSize = true };
     private readonly CheckBox _memory = new() { AutoSize = true };
+    private readonly CheckBox _network = new() { AutoSize = true };
     private readonly CheckBox _autoStart = new() { AutoSize = true };
     private readonly CheckBox _reminders = new() { AutoSize = true };
     private readonly CheckBox _agentPlan = new() { Text = "Agent Plan", AutoSize = true };
@@ -366,6 +367,7 @@ public sealed class MonitoringSettingsForm : Form
         Add(page, Label("语言", "Language")); Add(page, _language);
         Add(page, Bind(_autoStart, "开机自动启动", "Start with Windows"));
         Add(page, Bind(_memory, "启用内存监控（每 5 秒采样）", "Enable memory monitoring (every 5 seconds)"));
+        Add(page, Bind(_network, "启用网络接口观察（每秒采样，仅监控）", "Enable network interface observation (1 second, monitoring only)"));
         Add(page, Label("切换工作／离开快捷键", "Switch Work/Away shortcut")); Add(page, _modeHotkey);
         Add(page, Label("打开额度与内存面板快捷键", "Open usage and memory shortcut")); Add(page, _panelHotkey);
         Add(page, Label("点击输入框后按下快捷键；两个快捷键必须不同。", "Focus an input and press the shortcut. The two shortcuts must be different."));
@@ -411,6 +413,7 @@ public sealed class MonitoringSettingsForm : Form
         _panelHotkey.SetCaptured(GlobalHotkeyService.ParseHotkeyString(_baselineMonitoring.PopoverHotkey) ?? new HotkeyConfig { Key = "D" });
         _language.SelectedIndex = _baselineApp.Language == "en-US" ? 1 : 0;
         _autoStart.Checked = _baselineApp.AutoStart; _memory.Checked = _baselineMonitoring.MemoryEnabled;
+        _network.Checked = _baselineMonitoring.NetworkEnabled;
         _leftClick.Checked = _baselineMonitoring.LeftClickOpensPopover; _reminders.Checked = _baselineMonitoring.RemindersEnabled;
         _agentPlan.Checked = _baselineMonitoring.ShowArkAgentPlan; _codingPlan.Checked = _baselineMonitoring.ShowArkCodingPlan;
         SetInterval(_globalInterval, _baselineMonitoring.RefreshIntervalMinutes);
@@ -433,6 +436,7 @@ public sealed class MonitoringSettingsForm : Form
     };
     private MonitoringSettings DraftMonitoring() => _baselineMonitoring with
     {
+        NetworkEnabled = _network.Checked,
         MemoryEnabled = _memory.Checked, RemindersEnabled = _reminders.Checked, LeftClickOpensPopover = _leftClick.Checked,
         PopoverHotkey = $"{_panelHotkey.Captured.Modifiers}+{_panelHotkey.Captured.Key}",
         RefreshIntervalMinutes = Interval(_globalInterval) ?? 5,

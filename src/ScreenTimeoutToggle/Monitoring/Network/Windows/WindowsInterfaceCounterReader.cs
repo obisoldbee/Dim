@@ -65,7 +65,7 @@ public sealed class WindowsInterfaceCounterReader : IInterfaceCounterTable
                 rx = unchecked((ulong)stats.BytesReceived);
                 tx = unchecked((ulong)stats.BytesSent);
             }
-            catch (Exception e) when (e is InvalidOperationException or NotSupportedException
+            catch (Exception e) when (e is NetworkInformationException or InvalidOperationException or NotSupportedException
                                       or PlatformNotSupportedException)
             {
                 unreadable++; // counters unknown for this adapter — never reported as 0
@@ -77,7 +77,7 @@ public sealed class WindowsInterfaceCounterReader : IInterfaceCounterTable
                 name,
                 Classify((int)nic.NetworkInterfaceType, nic.Name, nic.Description),
                 rx,
-                tx));
+                tx, nic.OperationalStatus == OperationalStatus.Up));
         }
 
         if (parsed.Count == 0)

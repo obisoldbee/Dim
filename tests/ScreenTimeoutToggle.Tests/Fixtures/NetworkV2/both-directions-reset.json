@@ -1,0 +1,89 @@
+{
+  "input": [
+    {
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "s1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:44:50.000Z",
+      "monotonicNs": "1000000000",
+      "bytes": {
+        "upload": "1000",
+        "download": "1000"
+      }
+    },
+    {
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "s1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:44:51.000Z",
+      "monotonicNs": "2000000000",
+      "bytes": {
+        "upload": "6000",
+        "download": "9000"
+      }
+    },
+    {
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "s1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:44:52.000Z",
+      "monotonicNs": "3000000000",
+      "bytes": {
+        "upload": "100",
+        "download": "100"
+      }
+    },
+    {
+      "sourceID": "fixture.interface",
+      "interfaceID": "en0",
+      "captureSessionID": "s1",
+      "counterEpoch": "1",
+      "sampledAt": "2026-09-20T09:44:53.000Z",
+      "monotonicNs": "4000000000",
+      "bytes": {
+        "upload": "600",
+        "download": "300"
+      }
+    }
+  ],
+  "expected": {
+    "states": [
+      {
+        "key": "fixture.interface|en0|s1",
+        "upload": {
+          "bytes": "500",
+          "since": "2026-09-20T09:44:52.000Z",
+          "sinceMonotonicNs": "3000000000",
+          "continuous": false,
+          "breakReason": "counter-reset-or-wrap",
+          "scope": "observedSegment"
+        },
+        "download": {
+          "bytes": "200",
+          "since": "2026-09-20T09:44:52.000Z",
+          "sinceMonotonicNs": "3000000000",
+          "continuous": false,
+          "breakReason": "counter-reset-or-wrap",
+          "scope": "observedSegment"
+        }
+      }
+    ],
+    "diagnostics": [
+      {
+        "interfaceID": "en0",
+        "direction": "upload",
+        "reason": "counter-reset-or-wrap",
+        "at": "2026-09-20T09:44:52.000Z"
+      },
+      {
+        "interfaceID": "en0",
+        "direction": "download",
+        "reason": "counter-reset-or-wrap",
+        "at": "2026-09-20T09:44:52.000Z"
+      }
+    ]
+  }
+}
