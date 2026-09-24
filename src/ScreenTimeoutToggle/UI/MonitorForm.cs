@@ -244,20 +244,36 @@ public sealed class MonitorForm : Form
     }
 
     /// <summary>
-    /// Ctrl+Tab cycles quota/memory/network; 1/2/4 jump to them and 3 opens settings. Navigation is used only when the user is
+    /// Tab/Shift+Tab cycle all three header tabs, including the wraparound. F6 moves
+    /// between page selection and ordinary control navigation. Ctrl+Tab also cycles;
+    /// 1/2/4 jump to pages and 3 opens settings. Navigation is used only when the user is
     /// not typing into a text/numeric field on the settings page, and never over the chart's
     /// own arrow keys: there Left/Right walk the sampled points, which is the keyboard path to
     /// a reading.
     /// </summary>
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
+        if (keyData == Keys.F6)
+        {
+            if (PageTabHasFocus)
+                SelectNextControl(_networkSegment, true, true, true, true);
+            else
+                PageTab(_currentView).Focus();
+            return true;
+        }
+        if (PageTabHasFocus && (keyData == Keys.Tab || keyData == (Keys.Shift | Keys.Tab)))
+        {
+            CyclePage(keyData.HasFlag(Keys.Shift));
+            return true; // Do not also move focus into refresh/settings/the page.
+        }
         if (keyData == Keys.Escape && _currentView == View.Network && _networkView.HandleEscape()) return true;
         if (!IsTextInputActive() && !ChartOwnsKey(keyData))
         {
             switch (keyData)
             {
                 case Keys.Control | Keys.Tab:
-                    SetView((View)(((int)_currentView + 1) % 3));
+                case Keys.Control | Keys.Shift | Keys.Tab:
+                    CyclePage(keyData.HasFlag(Keys.Shift));
                     return true;
                 case Keys.Right or Keys.Left:
                     SetView((View)(((int)_currentView + (keyData == Keys.Left ? 2 : 1)) % 3));
@@ -279,13 +295,33 @@ public sealed class MonitorForm : Form
         return base.ProcessCmdKey(ref msg, keyData);
     }
 
+    private bool PageTabHasFocus => _quotaSegment.Focused || _memorySegment.Focused || _networkSegment.Focused;
+    private Button PageTab(View view) => view switch
+    {
+        View.Memory => _memorySegment,
+        View.Network => _networkSegment,
+        _ => _quotaSegment,
+    };
+
+    private void CyclePage(bool backwards)
+    {
+        SetView((View)(((int)_currentView + (backwards ? 2 : 1)) % 3));
+        PageTab(_currentView).Focus();
+    }
+
+    protected override void OnShown(EventArgs e)
+    {
+        PageTab(_currentView).Focus();
+        base.OnShown(e);
+    }
+
     protected override bool ProcessDialogKey(Keys keyData)
     {
         var handled = base.ProcessDialogKey(keyData);
         if (handled && (keyData == Keys.Tab || keyData == (Keys.Shift | Keys.Tab)))
         {
-            // Keep WinForms' normal forward/backward focus order. A header tab reached
-            // by Tab selects its page immediately; other controls still require activation.
+            // Outside the header, keep normal control traversal. Re-entering the
+            // header selects its page; further Tab keys use the cycle above.
             // Do not use Enter/GotFocus: hiding a page can move focus programmatically.
             if (_quotaSegment.Focused) SetView(View.Quota);
             else if (_memorySegment.Focused) SetView(View.Memory);
@@ -328,6 +364,7 @@ public sealed class MonitorForm : Form
         TopMost = true;
         Show();
         Activate();
+        PageTab(_currentView).Focus();
 
         RefreshVisibleView();
     }
@@ -1772,6 +1809,11 @@ public sealed class MonitorForm : Form
         _quotaSegment.Text = L("monitor.tab_quota");
         _memorySegment.Text = L("monitor.tab_memory");
         _networkSegment.Text = LocalizationService.CurrentLanguage == "en-US" ? "Network" : "网络";
+        foreach (var tab in new[] { _quotaSegment, _memorySegment, _networkSegment })
+        {
+            tab.AccessibleDescription = L("monitor.page_keyboard");
+            _toolTip.SetToolTip(tab, L("monitor.page_keyboard"));
+        }
         _refreshButton.Text = "⟳";
         _settingsButton.Text = "⚙";
         _quotaHint.Text = L("monitor.quota_all_disabled");

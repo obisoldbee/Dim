@@ -181,27 +181,32 @@ internal static class Program
         if (foregroundName == "LockApp") throw new InvalidOperationException("Unlock the desktop before keyboard validation.");
         Button Tab(string field) => (Button)typeof(MonitorForm).GetField(field, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(form)!;
         var quota = Tab("_quotaSegment"); var memory = Tab("_memorySegment"); var network = Tab("_networkSegment");
+        var tabs = new[] { quota, memory, network };
+        var page = All(form).OfType<NetworkPage>().Single();
+        var initialRange = page.Chart.RangeIndex;
         var clicks = 0;
-        foreach (var tab in new[] { quota, memory, network }) tab.Click += (_, _) => clicks++;
+        foreach (var button in tabs.Concat(new[] { Tab("_refreshButton"), Tab("_settingsButton") })) button.Click += (_, _) => clicks++;
         var frames = new List<object>(); var timings = new List<double>();
-        for (var i = 0; i < 50; i++)
+        if (form.CurrentView != MonitorForm.View.Quota || !quota.Focused)
+            throw new InvalidOperationException("Opening did not select and focus the quota page.");
+        capture("tab-native-start-quota");
+        for (var i = 0; i < 300; i++)
         {
-            form.SetView(MonitorForm.View.Quota);
-            if (!quota.Focus()) throw new InvalidOperationException("Quota tab did not take focus.");
-            foreach (var step in new[] { (quota, memory, MonitorForm.View.Memory), (memory, network, MonitorForm.View.Network) })
-            {
-                var watch = Stopwatch.StartNew();
-                if (!PostMessage(step.Item1.Handle, 0x100, (IntPtr)Keys.Tab, IntPtr.Zero) ||
-                    !PostMessage(step.Item1.Handle, 0x101, (IntPtr)Keys.Tab, IntPtr.Zero))
-                    throw new InvalidOperationException("Could not post Tab to the probe's own control.");
-                Application.DoEvents(); // drain the posted keys through WinForms preprocessing
-                form.Refresh();
-                if (!form.Visible || !step.Item2.Focused || form.CurrentView != step.Item3)
-                    throw new InvalidOperationException($"Tab did not select {step.Item3}: visible={form.Visible}, focused={step.Item2.Focused}, page={form.CurrentView}, round={i}.");
-                var elapsed = watch.Elapsed.TotalMilliseconds;
-                timings.Add(elapsed); frames.Add(new { Page = form.CurrentView.ToString(), InputToPaintMs = elapsed, FocusedTab = step.Item2.Text });
-                if (i == 0) capture("tab-native-" + form.CurrentView.ToString().ToLowerInvariant());
-            }
+            // Never call SetView or Focus between keys: that masked the missing
+            // network -> quota transition in the previous acceptance harness.
+            var focused = tabs.Single(t => t.Focused);
+            var expected = (MonitorForm.View)((i + 1) % 3);
+            var watch = Stopwatch.StartNew();
+            if (!PostMessage(focused.Handle, 0x100, (IntPtr)Keys.Tab, IntPtr.Zero) ||
+                !PostMessage(focused.Handle, 0x101, (IntPtr)Keys.Tab, IntPtr.Zero))
+                throw new InvalidOperationException("Could not post Tab to the probe's own control.");
+            Application.DoEvents();
+            form.Refresh();
+            if (!form.Visible || !tabs[(int)expected].Focused || form.CurrentView != expected || page.Chart.RangeIndex != initialRange)
+                throw new InvalidOperationException($"Tab {i + 1} did not select {expected}: visible={form.Visible}, page={form.CurrentView}.");
+            var elapsed = watch.Elapsed.TotalMilliseconds;
+            timings.Add(elapsed); frames.Add(new { KeyNumber = i + 1, Page = form.CurrentView.ToString(), InputToPaintMs = elapsed, FocusedTab = tabs[(int)expected].Text });
+            if (i < 3) capture("tab-native-" + form.CurrentView.ToString().ToLowerInvariant());
         }
         var buttons = new[] { quota, memory, network }.Select(b => new { b.Text, b.Width,
             TextWidth = TextRenderer.MeasureText(b.Text, b.Font).Width,
@@ -211,9 +216,10 @@ internal static class Program
         var report = new
         {
             Assembly = typeof(MonitorForm).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
-            Method = "SystemAware native WinForms; queued WM_KEYDOWN/WM_KEYUP Tab to own focused HWND, DoEvents dispatch, synchronous Refresh. 50 quota-memory-network rounds; no Enter or Click.",
+            Method = "SystemAware native WinForms; 300 consecutive queued Tab keys, DoEvents dispatch and synchronous Refresh. 100 complete quota-memory-network-quota cycles. No Focus/SetView reset, Enter or Click between keys.",
             Dpi = form.DeviceDpi, ForegroundProcess = foregroundName, Frames = frames, Clicks = clicks, Buttons = buttons,
-            MedianMs = (sorted[49] + sorted[50]) / 2, P95Ms = sorted[94], P99Ms = sorted[98], MaxMs = sorted[^1],
+            MedianMs = (sorted[149] + sorted[150]) / 2, P95Ms = sorted[284], P99Ms = sorted[296], MaxMs = sorted[^1],
+            CompletedCycles = 100, RangeUnchanged = page.Chart.RangeIndex == initialRange,
             DpiLimit = "Only current desktop DPI measured; no OS scaling switch or cross-monitor validation.",
             ScreenshotMethod = "DrawToBitmap of live production MonitorForm controls in the native probe, not the installed tray process or HTML."
         };
