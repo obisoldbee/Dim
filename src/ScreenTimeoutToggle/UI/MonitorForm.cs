@@ -279,6 +279,21 @@ public sealed class MonitorForm : Form
         return base.ProcessCmdKey(ref msg, keyData);
     }
 
+    protected override bool ProcessDialogKey(Keys keyData)
+    {
+        var handled = base.ProcessDialogKey(keyData);
+        if (handled && (keyData == Keys.Tab || keyData == (Keys.Shift | Keys.Tab)))
+        {
+            // Keep WinForms' normal forward/backward focus order. A header tab reached
+            // by Tab selects its page immediately; other controls still require activation.
+            // Do not use Enter/GotFocus: hiding a page can move focus programmatically.
+            if (_quotaSegment.Focused) SetView(View.Quota);
+            else if (_memorySegment.Focused) SetView(View.Memory);
+            else if (_networkSegment.Focused) SetView(View.Network);
+        }
+        return handled;
+    }
+
     private bool IsTextInputActive()
     {
         Control? leaf = ActiveControl;

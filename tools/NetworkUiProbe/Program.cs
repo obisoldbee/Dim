@@ -17,6 +17,7 @@ internal static class Program
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
     [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr hwnd, uint message, IntPtr wparam, IntPtr lparam);
+    [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr hwnd, uint message, IntPtr wparam, IntPtr lparam);
     private static IEnumerable<Control> All(Control c) => c.Controls.Cast<Control>().SelectMany(x => new[] { x }.Concat(All(x)));
     [STAThread]
     private static void Main(string[] args)
@@ -46,6 +47,12 @@ internal static class Program
         {
             try
             {
+                if (args.Contains("--tab-navigation"))
+                {
+                    CheckTabNavigation(form, output, Capture);
+                    form.Close();
+                    return;
+                }
                 form.SetView(MonitorForm.View.Network);
                 await Task.Delay(scenario == "live" ? 6500 : 500);
                 form.Show(); form.Activate(); form.SetView(MonitorForm.View.Network);
@@ -165,5 +172,51 @@ internal static class Program
         };
         Application.Run(form);
         Environment.ExitCode = error;
+    }
+
+    private static void CheckTabNavigation(MonitorForm form, string output, Action<string> capture)
+    {
+        var foreground = GetForegroundWindow(); GetWindowThreadProcessId(foreground, out var pid);
+        var foregroundName = Process.GetProcessById((int)pid).ProcessName;
+        if (foregroundName == "LockApp") throw new InvalidOperationException("Unlock the desktop before keyboard validation.");
+        Button Tab(string field) => (Button)typeof(MonitorForm).GetField(field, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(form)!;
+        var quota = Tab("_quotaSegment"); var memory = Tab("_memorySegment"); var network = Tab("_networkSegment");
+        var clicks = 0;
+        foreach (var tab in new[] { quota, memory, network }) tab.Click += (_, _) => clicks++;
+        var frames = new List<object>(); var timings = new List<double>();
+        for (var i = 0; i < 50; i++)
+        {
+            form.SetView(MonitorForm.View.Quota);
+            if (!quota.Focus()) throw new InvalidOperationException("Quota tab did not take focus.");
+            foreach (var step in new[] { (quota, memory, MonitorForm.View.Memory), (memory, network, MonitorForm.View.Network) })
+            {
+                var watch = Stopwatch.StartNew();
+                if (!PostMessage(step.Item1.Handle, 0x100, (IntPtr)Keys.Tab, IntPtr.Zero) ||
+                    !PostMessage(step.Item1.Handle, 0x101, (IntPtr)Keys.Tab, IntPtr.Zero))
+                    throw new InvalidOperationException("Could not post Tab to the probe's own control.");
+                Application.DoEvents(); // drain the posted keys through WinForms preprocessing
+                form.Refresh();
+                if (!form.Visible || !step.Item2.Focused || form.CurrentView != step.Item3)
+                    throw new InvalidOperationException($"Tab did not select {step.Item3}: visible={form.Visible}, focused={step.Item2.Focused}, page={form.CurrentView}, round={i}.");
+                var elapsed = watch.Elapsed.TotalMilliseconds;
+                timings.Add(elapsed); frames.Add(new { Page = form.CurrentView.ToString(), InputToPaintMs = elapsed, FocusedTab = step.Item2.Text });
+                if (i == 0) capture("tab-native-" + form.CurrentView.ToString().ToLowerInvariant());
+            }
+        }
+        var buttons = new[] { quota, memory, network }.Select(b => new { b.Text, b.Width,
+            TextWidth = TextRenderer.MeasureText(b.Text, b.Font).Width,
+            Fits = b.Width >= TextRenderer.MeasureText(b.Text, b.Font).Width + 8 * form.DeviceDpi / 96 }).ToArray();
+        if (clicks != 0 || buttons.Any(b => !b.Fits)) throw new InvalidOperationException("Tab unexpectedly clicked a button or clipped a label.");
+        var sorted = timings.Order().ToArray();
+        var report = new
+        {
+            Assembly = typeof(MonitorForm).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
+            Method = "SystemAware native WinForms; queued WM_KEYDOWN/WM_KEYUP Tab to own focused HWND, DoEvents dispatch, synchronous Refresh. 50 quota-memory-network rounds; no Enter or Click.",
+            Dpi = form.DeviceDpi, ForegroundProcess = foregroundName, Frames = frames, Clicks = clicks, Buttons = buttons,
+            MedianMs = (sorted[49] + sorted[50]) / 2, P95Ms = sorted[94], P99Ms = sorted[98], MaxMs = sorted[^1],
+            DpiLimit = "Only current desktop DPI measured; no OS scaling switch or cross-monitor validation.",
+            ScreenshotMethod = "DrawToBitmap of live production MonitorForm controls in the native probe, not the installed tray process or HTML."
+        };
+        File.WriteAllText(Path.Combine(output, "tab-native-report.json"), JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
     }
 }
