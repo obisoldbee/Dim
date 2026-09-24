@@ -18,6 +18,8 @@ internal static class Program
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
     [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr hwnd, uint message, IntPtr wparam, IntPtr lparam);
     [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr hwnd, uint message, IntPtr wparam, IntPtr lparam);
+    [DllImport("user32.dll")] private static extern bool GetKeyboardState(byte[] state);
+    [DllImport("user32.dll")] private static extern bool SetKeyboardState(byte[] state);
     private static IEnumerable<Control> All(Control c) => c.Controls.Cast<Control>().SelectMany(x => new[] { x }.Concat(All(x)));
     [STAThread]
     private static void Main(string[] args)
@@ -187,6 +189,7 @@ internal static class Program
         var clicks = 0;
         foreach (var button in tabs.Concat(new[] { Tab("_refreshButton"), Tab("_settingsButton") })) button.Click += (_, _) => clicks++;
         var frames = new List<object>(); var timings = new List<double>();
+        using var keyboard = new BareTabProbeFilter();
         if (form.CurrentView != MonitorForm.View.Quota || !quota.Focused)
             throw new InvalidOperationException("Opening did not select and focus the quota page.");
         capture("tab-native-start-quota");
@@ -197,15 +200,20 @@ internal static class Program
             var focused = tabs.Single(t => t.Focused);
             var expected = (MonitorForm.View)((i + 1) % 3);
             var watch = Stopwatch.StartNew();
+            keyboard.Expect(focused.Handle);
             if (!PostMessage(focused.Handle, 0x100, (IntPtr)Keys.Tab, IntPtr.Zero) ||
                 !PostMessage(focused.Handle, 0x101, (IntPtr)Keys.Tab, IntPtr.Zero))
                 throw new InvalidOperationException("Could not post Tab to the probe's own control.");
-            Application.DoEvents();
+            try { Application.DoEvents(); }
+            finally { keyboard.Restore(); }
             form.Refresh();
-            if (!form.Visible || !tabs[(int)expected].Focused || form.CurrentView != expected || page.Chart.RangeIndex != initialRange)
+            if (keyboard.KeysDelivered != 1 || keyboard.DeliveredModifiers != Keys.None ||
+                !form.Visible || !tabs[(int)expected].Focused || form.CurrentView != expected || page.Chart.RangeIndex != initialRange)
                 throw new InvalidOperationException($"Tab {i + 1} did not select {expected}: visible={form.Visible}, page={form.CurrentView}.");
             var elapsed = watch.Elapsed.TotalMilliseconds;
-            timings.Add(elapsed); frames.Add(new { KeyNumber = i + 1, Page = form.CurrentView.ToString(), InputToPaintMs = elapsed, FocusedTab = tabs[(int)expected].Text });
+            timings.Add(elapsed); frames.Add(new { KeyNumber = i + 1, Page = form.CurrentView.ToString(), InputToPaintMs = elapsed,
+                FocusedTab = tabs[(int)expected].Text, ObservedModifiers = keyboard.ObservedModifiers.ToString(),
+                DeliveredModifiers = keyboard.DeliveredModifiers.ToString(), keyboard.KeysDelivered });
             if (i < 3) capture("tab-native-" + form.CurrentView.ToString().ToLowerInvariant());
         }
         var buttons = new[] { quota, memory, network }.Select(b => new { b.Text, b.Width,
@@ -220,9 +228,41 @@ internal static class Program
             Dpi = form.DeviceDpi, ForegroundProcess = foregroundName, Frames = frames, Clicks = clicks, Buttons = buttons,
             MedianMs = (sorted[149] + sorted[150]) / 2, P95Ms = sorted[284], P99Ms = sorted[296], MaxMs = sorted[^1],
             CompletedCycles = 100, RangeUnchanged = page.Chart.RangeIndex == initialRange,
+            KeyboardIsolation = "Probe message filter records modifiers, then clears and restores only its own thread's keyboard state around each queued Tab. No keyboard state or input in other applications is changed.",
             DpiLimit = "Only current desktop DPI measured; no OS scaling switch or cross-monitor validation.",
             ScreenshotMethod = "DrawToBitmap of live production MonitorForm controls in the native probe, not the installed tray process or HTML."
         };
         File.WriteAllText(Path.Combine(output, "tab-native-report.json"), JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    // PostMessage does not specify modifiers. Without isolation, a Shift held
+    // elsewhere on the desktop can turn a scripted forward Tab into Shift+Tab.
+    private sealed class BareTabProbeFilter : IMessageFilter, IDisposable
+    {
+        private IntPtr _expected;
+        private byte[]? _previous;
+        public int KeysDelivered { get; private set; }
+        public Keys ObservedModifiers { get; private set; }
+        public Keys DeliveredModifiers { get; private set; }
+        public BareTabProbeFilter() => Application.AddMessageFilter(this);
+        public void Expect(IntPtr handle) { _expected = handle; KeysDelivered = 0; }
+        public bool PreFilterMessage(ref Message m)
+        {
+            if (m.HWnd != _expected || m.Msg != 0x100 || m.WParam != (IntPtr)Keys.Tab) return false;
+            KeysDelivered++;
+            ObservedModifiers = Control.ModifierKeys;
+            _previous ??= new byte[256];
+            if (!GetKeyboardState(_previous) || !SetKeyboardState(new byte[256]))
+                throw new InvalidOperationException("Could not isolate probe keyboard state.");
+            DeliveredModifiers = Control.ModifierKeys;
+            return false; // normal WinForms preprocessing still handles the actual key
+        }
+        public void Restore()
+        {
+            if (_previous is null) return;
+            if (!SetKeyboardState(_previous)) throw new InvalidOperationException("Could not restore probe keyboard state.");
+            _previous = null;
+        }
+        public void Dispose() { Restore(); Application.RemoveMessageFilter(this); }
     }
 }
